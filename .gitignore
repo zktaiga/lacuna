@@ -1,0 +1,31 @@
+# Mix
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+erl_crash.dump
+*.ez
+lacuna-*.tar
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local notes (operator-specific findings, ad-hoc commands)
+NOTES.md
+handoff.md
+handoff.local.md
+
+# Generated at runtime
+/courts.json
+priv/recon/
+priv/discover/capture/
+session.dat
+*.log
+!test/fixtures/courts.json
+
+# Local dev caches
+.elixir_ls/
+.DS_Store
