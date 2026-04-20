@@ -1,0 +1,26 @@
+# Lacuna preferences. Reload on every poll — edit at runtime, no restart.
+
+[poll]
+interval_seconds = 300        # 5 minutes
+jitter_seconds   = 60         # +/- this much, randomised each tick
+lookahead_days   = 7          # poll today, today+1, ..., today+6
+backoff_seconds  = 600        # after a poll fails, wait this much before retry
+
+[match]
+# Slots have to satisfy ALL these to count as "interesting" enough to alert.
+# Empty values mean "match anything for this dimension".
+category   = ""                       # case-insensitive substring on facility/category name
+weekdays   = []                       # e.g. ["Sat", "Sun"]
+start_hour = 0                        # 0..23, inclusive
+end_hour   = 23                       # 0..23, inclusive (slot must end by this)
+court_ids  = []                       # whitelist; empty = all matched courts
+
+[booking]
+max_fee_aed = 0                       # bot refuses to confirm anything above this
+
+[plugins]
+# Behaviour-implementing modules loaded at boot. Add modules here to
+# extend the bot without touching core code.
+notifiers = ["Elixir.Lacuna.Plugins.TelegramNotifier"]
+matchers  = ["Elixir.Lacuna.Plugins.PrefMatcher"]
+booker    = "Elixir.Lacuna.Plugins.DefaultBooker"

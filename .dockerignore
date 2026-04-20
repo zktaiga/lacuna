@@ -1,0 +1,10 @@
+_build
+deps
+.git
+.gitignore
+.env
+courts.json
+priv/recon
+test
+*.tar
+.elixir_ls
