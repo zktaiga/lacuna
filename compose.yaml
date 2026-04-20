@@ -1,0 +1,19 @@
+services:
+  lacuna:
+    build: .
+    image: lacuna:latest
+    container_name: lacuna
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./prefs.toml:/app/prefs.toml:ro
+      - lacuna-data:/app/data
+    healthcheck:
+      test: ["CMD", "/app/bin/lacuna", "rpc", "Lacuna.Watcher.Poller.status()"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  lacuna-data:
