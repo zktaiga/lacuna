@@ -1,0 +1,10 @@
+login_url=auth/m_login/
+logout_url=auth/m_logout/
+m_get_dashboard_static_data=community_v2/m_get_dashboard_static_data/
+m_get_member_ru_and_gst_details=runit/m_get_member_ru_and_gst_details/
+m_get_facility_list=facilities/m_get_facility_list
+m_get_facility_bookings_info=facilities/m_get_facility_bookings_info
+m_get_my_bookings_v3=facilities/m_get_my_bookings_v3
+m_get_facility_charge_data=facilities/m_get_facility_charge_data/
+m_member_make_booking=facilities/m_member_make_booking/
+m_cancel_booking=facilities/m_cancel_booking/

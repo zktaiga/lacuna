@@ -1,0 +1,8 @@
+{
+  "courts": [
+    {"id": "f1", "name": "Court A"},
+    {"id": "f2", "name": "Court B"},
+    {"id": "f3", "name": "Court C"},
+    {"id": "f4", "name": "Court D"}
+  ]
+}

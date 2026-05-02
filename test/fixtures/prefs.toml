@@ -1,0 +1,20 @@
+[poll]
+interval_seconds = 300
+jitter_seconds   = 0
+lookahead_days   = 2
+backoff_seconds  = 60
+
+[match]
+category   = ""
+weekdays   = []
+start_hour = 0
+end_hour   = 23
+court_ids  = []
+
+[booking]
+max_fee_aed = 0
+
+[plugins]
+notifiers = []
+matchers  = ["Elixir.Lacuna.Plugins.PrefMatcher"]
+booker    = "Elixir.Lacuna.Plugins.DefaultBooker"
