@@ -210,8 +210,10 @@ defmodule Lacuna.Telegram.Free do
     end
   end
 
-  defp gather(session, courts, date) do
+  defp gather(_session, courts, date) do
     Enum.reduce_while(courts, {:ok, []}, fn court, {:ok, acc} ->
+      session = Session.current!()
+
       case API.facility_availability(session, court.id, date) do
         {:ok, details} ->
           slots = Availability.open_slots(Map.put_new(details, "facility_id", court.id), date)
