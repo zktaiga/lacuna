@@ -4,6 +4,7 @@ defmodule Lacuna.Telegram.Bot do
 
   Registered command surface:
 
+      /menu      — main navigation
       /free      — what's available, multi-day picker
       /watch     — manage the standing watch (alerts when slots open)
       /bookings  — list & cancel upcoming bookings
@@ -24,6 +25,7 @@ defmodule Lacuna.Telegram.Bot do
 
   command("start")
   command("help")
+  command("menu")
   command("free")
   command("watch")
   command("bookings")
@@ -50,8 +52,9 @@ defmodule Lacuna.Telegram.Bot do
 
   def handle(_other, ctx), do: ctx
 
-  defp dispatch_command(:start, msg, ctx), do: Commands.Help.run(msg, ctx)
+  defp dispatch_command(:start, msg, ctx), do: Commands.Menu.run(msg, ctx)
   defp dispatch_command(:help, msg, ctx), do: Commands.Help.run(msg, ctx)
+  defp dispatch_command(:menu, msg, ctx), do: Commands.Menu.run(msg, ctx)
   defp dispatch_command(:free, msg, ctx), do: Commands.Free.run(msg, ctx)
   defp dispatch_command(:watch, msg, ctx), do: Commands.Watch.run(msg, ctx)
   defp dispatch_command(:bookings, msg, ctx), do: Commands.Bookings.run(msg, ctx)

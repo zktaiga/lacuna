@@ -24,7 +24,7 @@ defmodule Lacuna.Telegram.Free do
 
   @spec send_root(integer()) :: :ok
   def send_root(chat_id) do
-    text = "*Available slots*\n\nPick a day."
+    text = "*Find slots*\n\nPick a day."
     markup = day_keyboard()
     ExGram.send_message(chat_id, text, parse_mode: "Markdown", reply_markup: markup)
     :ok
@@ -33,7 +33,7 @@ defmodule Lacuna.Telegram.Free do
   ## Edits (callback handlers)
 
   def edit_to_root(message) do
-    edit(message, "*Available slots*\n\nPick a day.", day_keyboard())
+    edit(message, "*Find slots*\n\nPick a day.", day_keyboard())
   end
 
   def edit_to_day(message, %Date{} = date) do
@@ -103,7 +103,7 @@ defmodule Lacuna.Telegram.Free do
       end
 
     rows = Enum.chunk_every(buttons, 3)
-    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [menu_row()]}
   end
 
   defp day_text(date, slots) do
@@ -132,7 +132,8 @@ defmodule Lacuna.Telegram.Free do
     rows = Enum.chunk_every(time_buttons, 3)
 
     nav = [
-      %ExGram.Model.InlineKeyboardButton{text: "← Days", callback_data: "free:root"}
+      %ExGram.Model.InlineKeyboardButton{text: "← Days", callback_data: "free:root"},
+      %ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "free:close"}
     ]
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [nav]}
@@ -159,17 +160,26 @@ defmodule Lacuna.Telegram.Free do
       %ExGram.Model.InlineKeyboardButton{
         text: "← Times",
         callback_data: "free:d:#{Date.to_iso8601(date)}"
-      }
+      },
+      %ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "free:close"}
     ]
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [nav]}
+  end
+
+  defp menu_row do
+    [
+      %ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"},
+      %ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "free:close"}
+    ]
   end
 
   defp back_to_root do
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
         [
-          %ExGram.Model.InlineKeyboardButton{text: "← Days", callback_data: "free:root"}
+          %ExGram.Model.InlineKeyboardButton{text: "← Days", callback_data: "free:root"},
+          %ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "free:close"}
         ]
       ]
     }

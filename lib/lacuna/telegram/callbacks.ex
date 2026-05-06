@@ -12,7 +12,7 @@ defmodule Lacuna.Telegram.Callbacks do
 
   alias Lacuna.{Slot, Watch.Config}
   alias Lacuna.Backend.{API, Availability, Session}
-  alias Lacuna.Telegram.{Free, WatchView, BookingsView, Views}
+  alias Lacuna.Telegram.{BookingsView, Free, Menu, Views, WatchView}
   require Logger
 
   def handle(%ExGram.Model.CallbackQuery{} = cq, ctx) do
@@ -24,6 +24,16 @@ defmodule Lacuna.Telegram.Callbacks do
   end
 
   ## Dispatch
+
+  defp dispatch("menu:root", cq), do: safe(fn -> Menu.edit_menu(cq.message) end)
+  defp dispatch("menu:free", cq), do: safe(fn -> Free.edit_to_root(cq.message) end)
+  defp dispatch("menu:watch", cq), do: safe(fn -> WatchView.edit_view(cq.message) end)
+  defp dispatch("menu:bookings", cq), do: safe(fn -> BookingsView.edit_to_list(cq.message) end)
+
+  defp dispatch("free:close", cq) do
+    safe(fn -> ExGram.delete_message(cq.message.chat.id, cq.message.message_id) end)
+    {:ack, "Closed"}
+  end
 
   defp dispatch("free:root", cq), do: safe(fn -> Free.edit_to_root(cq.message) end)
 

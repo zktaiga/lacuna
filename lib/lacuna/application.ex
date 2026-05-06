@@ -47,6 +47,7 @@ defmodule Lacuna.Application do
 
       commands = [
         %ExGram.Model.BotCommand{command: "start", description: "Show command list"},
+        %ExGram.Model.BotCommand{command: "menu", description: "Open navigation menu"},
         %ExGram.Model.BotCommand{
           command: "free",
           description: "What's available — pick a day, time, court"

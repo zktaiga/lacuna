@@ -43,6 +43,7 @@ docker compose up -d --build
 
 ## commands
 
+- `/menu` — open the main navigation.
 - `/free` — browse available slots: day → time → court → book.
 - `/watch` — configure standing alerts: days, time window, expiry, cutoff, alert-only or auto-book.
 - `/bookings` — list upcoming bookings and cancel with a confirmation step.
