@@ -110,7 +110,7 @@ defmodule Lacuna.Backend.Session do
   ## Internal
 
   defp do_login(state) do
-    Logger.info("Logging in as #{state.email}")
+    Logger.info("Logging in to booking backend as #{redact_email(state.email)}")
 
     case API.login(state.email, state.password) do
       {:ok, %{cookie: cookie, comm_id: comm_id, user_id: user_id, uris: uris} = login} ->
@@ -136,4 +136,14 @@ defmodule Lacuna.Backend.Session do
     Logger.error("Login failed: #{inspect(reason)}")
     reply
   end
+
+  defp redact_email(email) when is_binary(email) do
+    case String.split(email, "@", parts: 2) do
+      [<<first::binary-size(1), _::binary>>, domain] -> first <> "***@" <> domain
+      [local, domain] when local != "" -> "***@" <> domain
+      _ -> "configured account"
+    end
+  end
+
+  defp redact_email(_), do: "configured account"
 end
