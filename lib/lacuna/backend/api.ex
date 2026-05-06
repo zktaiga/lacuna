@@ -219,11 +219,29 @@ defmodule Lacuna.Backend.API do
   ## Internal
 
   defp session_headers(nil), do: Contract.static_headers()
-  defp session_headers(session), do: Lacuna.Backend.Session.auth_headers(session)
+
+  defp session_headers(%Lacuna.Backend.Session{} = session) do
+    # Callers often hold a session struct for a whole workflow. If one request
+    # refreshes the cached login, that struct is stale. Always prefer the
+    # current GenServer state when available so later requests do not keep
+    # presenting the expired cookie jar.
+    case current_session() do
+      %Lacuna.Backend.Session{} = fresh -> Lacuna.Backend.Session.auth_headers(fresh)
+      _ -> Lacuna.Backend.Session.auth_headers(session)
+    end
+  end
 
   # Push new Set-Cookies back into the Session GenServer so the next
   # call sees them. Best-effort: we never crash a request because the
   # session refused the update.
+  defp current_session do
+    Lacuna.Backend.Session.current!()
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
   defp update_session_cookies(nil, _headers), do: :ok
 
   defp update_session_cookies(%{cookie: existing} = _session, headers) do

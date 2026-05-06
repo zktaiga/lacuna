@@ -184,13 +184,18 @@ defmodule Lacuna.Watcher.Poller do
   end
 
   defp fetch_all_slots(courts, prefs) do
-    session = Session.current!()
     today = Date.utc_today()
     days = for d <- 0..(prefs.poll.lookahead_days - 1), do: Date.add(today, d)
 
     pairs = for c <- courts, d <- days, do: {c, d}
 
     Enum.reduce_while(pairs, {:ok, []}, fn {court, date}, {:ok, acc} ->
+      # Fetch the current session for each request. A previous request may
+      # have refreshed the cached login after a 401, and reusing the stale
+      # struct for the rest of the poll would otherwise trigger one re-login
+      # per court/date pair.
+      session = Session.current!()
+
       case API.facility_availability(session, court.id, date) do
         {:ok, details} ->
           # facility_availability returns the facility_details map; ensure facility_id present
