@@ -12,7 +12,9 @@ defmodule Lacuna.Config do
             interval_seconds: pos_integer(),
             jitter_seconds: non_neg_integer(),
             lookahead_days: pos_integer(),
-            backoff_seconds: pos_integer()
+            backoff_seconds: pos_integer(),
+            request_delay_min_ms: non_neg_integer(),
+            request_delay_max_ms: non_neg_integer()
           },
           match: %{
             category: String.t(),
@@ -45,7 +47,9 @@ defmodule Lacuna.Config do
         interval_seconds: get_in(raw, ["poll", "interval_seconds"]) || 300,
         jitter_seconds: get_in(raw, ["poll", "jitter_seconds"]) || 60,
         lookahead_days: get_in(raw, ["poll", "lookahead_days"]) || 7,
-        backoff_seconds: get_in(raw, ["poll", "backoff_seconds"]) || 600
+        backoff_seconds: get_in(raw, ["poll", "backoff_seconds"]) || 600,
+        request_delay_min_ms: get_in(raw, ["poll", "request_delay_min_ms"]) || 250,
+        request_delay_max_ms: get_in(raw, ["poll", "request_delay_max_ms"]) || 1250
       },
       match: %{
         category: get_in(raw, ["match", "category"]) || "",

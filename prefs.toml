@@ -5,6 +5,8 @@ interval_seconds = 300        # 5 minutes
 jitter_seconds   = 60         # +/- this much, randomised each tick
 lookahead_days   = 7          # poll today, today+1, ..., today+6
 backoff_seconds  = 600        # after a poll fails, wait this much before retry
+request_delay_min_ms = 250    # background delay between availability requests
+request_delay_max_ms = 1250   # keeps poll batches from arriving as a burst
 
 [match]
 # Slots have to satisfy ALL these to count as "interesting" enough to alert.

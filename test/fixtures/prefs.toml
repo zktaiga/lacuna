@@ -3,6 +3,8 @@ interval_seconds = 300
 jitter_seconds   = 0
 lookahead_days   = 2
 backoff_seconds  = 60
+request_delay_min_ms = 0
+request_delay_max_ms = 0
 
 [match]
 category   = ""

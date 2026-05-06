@@ -190,6 +190,8 @@ defmodule Lacuna.Watcher.Poller do
     pairs = for c <- courts, d <- days, do: {c, d}
 
     Enum.reduce_while(pairs, {:ok, []}, fn {court, date}, {:ok, acc} ->
+      maybe_sleep_between_requests(prefs)
+
       # Fetch the current session for each request. A previous request may
       # have refreshed the cached login after a 401, and reusing the stale
       # struct for the rest of the poll would otherwise trigger one re-login
@@ -208,6 +210,17 @@ defmodule Lacuna.Watcher.Poller do
       end
     end)
   end
+
+  defp maybe_sleep_between_requests(%{
+         poll: %{request_delay_min_ms: min, request_delay_max_ms: max}
+       }) do
+    delay = jittered_request_delay(min, max)
+    if delay > 0, do: Process.sleep(delay)
+  end
+
+  defp jittered_request_delay(min, max) when min <= 0 and max <= 0, do: 0
+  defp jittered_request_delay(min, max) when max <= min, do: max(min, 0)
+  defp jittered_request_delay(min, max), do: min + :rand.uniform(max - min + 1) - 1
 
   defp publish_events(opened, closed, _prefs) do
     opened
