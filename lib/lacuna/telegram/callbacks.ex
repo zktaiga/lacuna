@@ -54,6 +54,8 @@ defmodule Lacuna.Telegram.Callbacks do
     end
   end
 
+  defp dispatch("watch:noop", _cq), do: :ok
+
   defp dispatch("watch:close", cq) do
     safe(fn ->
       ExGram.delete_message(cq.message.chat.id, cq.message.message_id)
