@@ -183,9 +183,16 @@ defmodule Lacuna.Watcher.Poller do
     end
   end
 
+  @doc false
+  def planned_dates(%Date{} = today, lookahead_days) do
+    for d <- 0..(lookahead_days - 1),
+        date = Date.add(today, d),
+        Watch.Config.date_matches_weekday?(date),
+        do: date
+  end
+
   defp fetch_all_slots(courts, prefs) do
-    today = Date.utc_today()
-    days = for d <- 0..(prefs.poll.lookahead_days - 1), do: Date.add(today, d)
+    days = planned_dates(Date.utc_today(), prefs.poll.lookahead_days)
 
     pairs = for c <- courts, d <- days, do: {c, d}
 
