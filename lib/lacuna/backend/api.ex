@@ -306,7 +306,8 @@ defmodule Lacuna.Backend.API do
   # see the original 401".
   defp retry_after_relogin(method, path, body, opts) do
     with %_{} <- Keyword.get(opts, :session),
-         false <- Keyword.get(opts, :__retried, false) do
+         false <- Keyword.get(opts, :__retried, false),
+         :ok <- record_auth_failure() do
       Lacuna.Backend.Session.invalidate()
 
       case Lacuna.Backend.Session.current!() do
@@ -320,8 +321,20 @@ defmodule Lacuna.Backend.API do
           nil
       end
     else
-      _ -> nil
+      {:pause, until} ->
+        {:error, {:auth_backoff, until}}
+
+      _ ->
+        nil
     end
+  end
+
+  defp record_auth_failure do
+    Lacuna.Backend.Session.record_auth_failure()
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp wrap({:ok, decoded}, headers), do: {:ok, decoded, headers}
