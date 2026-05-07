@@ -14,7 +14,7 @@ defmodule Lacuna.Telegram.BookingsView do
   "upcoming_bookings"`). Past bookings aren't actionable.
   """
 
-  alias Lacuna.Backend.{API, Session}
+  alias Lacuna.Backend.{API, Cache, Session}
   require Logger
 
   ## Send
@@ -147,19 +147,31 @@ defmodule Lacuna.Telegram.BookingsView do
   ## Data
 
   defp fetch_upcoming do
-    session = Session.current!()
+    case Cache.get(:my_bookings) do
+      {:ok, cached} ->
+        {:ok, cached}
 
-    with {:ok, data} <- API.my_bookings(session) do
-      groups = Map.get(data, "my_bookings", %{})
+      :miss ->
+        session = Session.current!()
 
-      list =
-        groups
-        |> Map.values()
-        |> List.flatten()
-        |> Enum.filter(&actionable_upcoming?/1)
-        |> Enum.sort_by(fn b -> {Map.get(b, "start_date"), Map.get(b, "start_time")} end)
+        with {:ok, data} <- API.my_bookings(session) do
+          groups = Map.get(data, "my_bookings", %{})
 
-      {:ok, list}
+          list =
+            groups
+            |> Map.values()
+            |> List.flatten()
+            |> Enum.filter(&actionable_upcoming?/1)
+            |> Enum.sort_by(fn b -> {Map.get(b, "start_date"), Map.get(b, "start_time")} end)
+
+          Cache.put(
+            :my_bookings,
+            list,
+            Application.get_env(:lacuna, :bookings_cache_ttl_seconds, 30)
+          )
+
+          {:ok, list}
+        end
     end
   end
 

@@ -16,7 +16,7 @@ defmodule Lacuna.Telegram.Free do
   """
 
   alias Lacuna.{Clock, Slot, Telegram.Views}
-  alias Lacuna.Backend.{API, Availability, Courts, Session}
+  alias Lacuna.Backend.{API, Availability, Cache, Courts, Session}
 
   @lookahead_days 14
 
@@ -63,15 +63,31 @@ defmodule Lacuna.Telegram.Free do
   ## Data
 
   defp fetch_open(%Date{} = date) do
-    with {:ok, courts} <- ensure_courts(),
-         session <- Session.current!(),
-         {:ok, raw} <- gather(session, courts, date) do
-      filtered =
-        Enum.map(raw, fn {court, slots} ->
-          {court, slots |> filter_past(date) |> Enum.sort_by(& &1.start_time, Time)}
-        end)
+    key = {:availability_day, date}
 
-      {:ok, Map.new(filtered, fn {c, s} -> {c.id, {c.name, s}} end)}
+    case Cache.get(key) do
+      {:ok, cached} ->
+        {:ok, cached}
+
+      :miss ->
+        with {:ok, courts} <- ensure_courts(),
+             session <- Session.current!(),
+             {:ok, raw} <- gather(session, courts, date) do
+          filtered =
+            Enum.map(raw, fn {court, slots} ->
+              {court, slots |> filter_past(date) |> Enum.sort_by(& &1.start_time, Time)}
+            end)
+
+          result = Map.new(filtered, fn {c, s} -> {c.id, {c.name, s}} end)
+
+          Cache.put(
+            key,
+            result,
+            Application.get_env(:lacuna, :availability_cache_ttl_seconds, 180)
+          )
+
+          {:ok, result}
+        end
     end
   end
 

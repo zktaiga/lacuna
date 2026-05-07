@@ -11,7 +11,7 @@ defmodule Lacuna.Plugins.DefaultBooker do
   @behaviour Lacuna.Behaviours.Booker
 
   alias Lacuna.{Config, Slot}
-  alias Lacuna.Backend.{API, Session}
+  alias Lacuna.Backend.{API, Cache, Session}
 
   require Logger
 
@@ -41,6 +41,8 @@ defmodule Lacuna.Plugins.DefaultBooker do
         case API.make_booking(session, fields) do
           {:ok, response} ->
             Logger.info("Booking response: #{inspect(response, limit: :infinity)}")
+            Cache.delete_prefix(:availability_day)
+            Cache.delete(:my_bookings)
             {:ok, %{slot: slot, response: response}}
 
           {:error, _} = err ->
@@ -60,8 +62,13 @@ defmodule Lacuna.Plugins.DefaultBooker do
     session = Session.current!()
 
     case API.cancel_booking(session, booking_id) do
-      {:ok, _} -> :ok
-      {:error, _} = err -> err
+      {:ok, _} ->
+        Cache.delete_prefix(:availability_day)
+        Cache.delete(:my_bookings)
+        :ok
+
+      {:error, _} = err ->
+        err
     end
   end
 end

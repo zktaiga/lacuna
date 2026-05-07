@@ -17,6 +17,7 @@ defmodule Lacuna.Application do
     children = [
       Lacuna.Bus,
       {Lacuna.Watch.Config, []},
+      {Lacuna.Backend.Cache, []},
       {Lacuna.Backend.Session, []},
       {Lacuna.Watcher.Poller, []},
       {Lacuna.Plugins.TelegramNotifier, []},
