@@ -12,7 +12,7 @@ defmodule Lacuna.Telegram.WatchView do
       │ [Toggle off]                 │
       │ Window: [M][A][E][Any]       │
       │ Days:  [M][T][W][T][F][S][S] │
-      │ TTL:   [2h][12h][24h][until off] │
+      │ Ends:  [Today][Tomorrow][7 days][Manual] │
       │ Notice: [Last minute][T-30m][T-1h] │
       │ Action: [Alert][Auto-book]         │
       └──────────────────────────────┘
@@ -121,11 +121,14 @@ defmodule Lacuna.Telegram.WatchView do
             }
           ],
 
-        # TTL shortcuts
+        # Expiry shortcuts
         [
-          %ExGram.Model.InlineKeyboardButton{text: "⏱ 2h", callback_data: "watch:ttl:2h"},
-          %ExGram.Model.InlineKeyboardButton{text: "12h", callback_data: "watch:ttl:12h"},
-          %ExGram.Model.InlineKeyboardButton{text: "24h", callback_data: "watch:ttl:24h"},
+          %ExGram.Model.InlineKeyboardButton{text: "Today", callback_data: "watch:ttl:today"},
+          %ExGram.Model.InlineKeyboardButton{
+            text: "Tomorrow",
+            callback_data: "watch:ttl:tomorrow"
+          },
+          %ExGram.Model.InlineKeyboardButton{text: "7 days", callback_data: "watch:ttl:7d"},
           %ExGram.Model.InlineKeyboardButton{text: "Manual", callback_data: "watch:ttl:none"}
         ],
         cutoff_row(cfg),
