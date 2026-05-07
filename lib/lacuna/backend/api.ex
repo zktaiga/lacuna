@@ -276,6 +276,7 @@ defmodule Lacuna.Backend.API do
          ) do
       {:ok, %Req.Response{status: status, body: resp_body, headers: rh}}
       when status in 200..299 ->
+        log_provider_request(method, path, status)
         decoded = decode(resp_body)
 
         if auth_rejected?(decoded) do
@@ -285,13 +286,17 @@ defmodule Lacuna.Backend.API do
         end
 
       {:ok, %Req.Response{status: 401, body: resp_body}} ->
+        log_provider_request(method, path, 401)
+
         retry_after_relogin(method, path, body, opts) ||
           {:error, {:http_status, 401, truncate(resp_body)}}
 
       {:ok, %Req.Response{status: status, body: resp_body}} ->
+        log_provider_request(method, path, status)
         {:error, {:http_status, status, truncate(resp_body)}}
 
       {:error, reason} ->
+        log_provider_request(method, path, {:transport, reason})
         {:error, {:transport, reason}}
     end
   end
@@ -309,6 +314,7 @@ defmodule Lacuna.Backend.API do
          false <- Keyword.get(opts, :__retried, false),
          :ok <- record_auth_failure() do
       Lacuna.Backend.Session.invalidate()
+      Lacuna.Backend.Session.clear_cache()
 
       case Lacuna.Backend.Session.current!() do
         %Lacuna.Backend.Session{} = fresh ->
@@ -327,6 +333,16 @@ defmodule Lacuna.Backend.API do
       _ ->
         nil
     end
+  end
+
+  defp log_provider_request(method, path, status) do
+    level =
+      if Application.get_env(:lacuna, :log_provider_requests, false), do: :info, else: :debug
+
+    Logger.log(
+      level,
+      "Provider request #{String.upcase(to_string(method))} #{path} -> #{inspect(status)}"
+    )
   end
 
   defp record_auth_failure do
