@@ -75,8 +75,23 @@ defmodule Lacuna.Telegram.Callbacks do
     :ok
   end
 
+  defp dispatch("watch:when:any", cq) do
+    Config.set_date_preset(nil)
+    Config.set_expires(nil)
+    safe(fn -> WatchView.edit_view(cq.message) end)
+    :ok
+  end
+
+  defp dispatch("watch:when:" <> preset, cq) do
+    Config.set_date_preset(String.to_existing_atom(preset))
+    Config.set_expires(expires_for_preset(preset))
+    safe(fn -> WatchView.edit_view(cq.message) end)
+    :ok
+  end
+
   defp dispatch("watch:days:any", cq) do
     Config.set_weekdays([])
+    Config.set_expires(nil)
     safe(fn -> WatchView.edit_view(cq.message) end)
     :ok
   end
@@ -90,6 +105,7 @@ defmodule Lacuna.Telegram.Callbacks do
         else: cfg.weekdays ++ [day]
 
     Config.set_weekdays(new_list)
+    Config.set_expires(nil)
     safe(fn -> WatchView.edit_view(cq.message) end)
     :ok
   end
@@ -97,14 +113,12 @@ defmodule Lacuna.Telegram.Callbacks do
   defp dispatch("watch:cutoff:" <> spec, cq) do
     minutes = if spec == "start", do: nil, else: String.to_integer(spec)
     Config.set_stop_before_start(minutes)
-    if Config.get().active? == false, do: Config.enable()
     safe(fn -> WatchView.edit_view(cq.message) end)
     {:ack, "Cutoff set"}
   end
 
   defp dispatch("watch:auto:" <> spec, cq) do
     Config.set_auto_book(spec == "on")
-    if Config.get().active? == false, do: Config.enable()
     safe(fn -> WatchView.edit_view(cq.message) end)
     {:ack, if(spec == "on", do: "Auto-book on", else: "Alert only")}
   end
@@ -120,9 +134,8 @@ defmodule Lacuna.Telegram.Callbacks do
       end
 
     Config.set_expires(expires)
-    if Config.get().active? == false, do: Config.enable()
     safe(fn -> WatchView.edit_view(cq.message) end)
-    {:ack, "TTL set"}
+    {:ack, "Ends set"}
   end
 
   defp dispatch("bk:list", cq), do: safe(fn -> BookingsView.edit_to_list(cq.message) end)
@@ -192,6 +205,16 @@ defmodule Lacuna.Telegram.Callbacks do
   defp ack_text({:error, _}), do: "Failed"
 
   ## Helpers
+
+  defp expires_for_preset("today"), do: local_end_of_day(0)
+  defp expires_for_preset("tomorrow"), do: local_end_of_day(1)
+  defp expires_for_preset("weekend"), do: weekend_end()
+
+  defp weekend_end do
+    today = Clock.local_today()
+    days_until_sunday = rem(7 - Date.day_of_week(today), 7)
+    local_end_of_day(days_until_sunday)
+  end
 
   defp local_end_of_day(days_from_today) do
     Clock.local_today()
