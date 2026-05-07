@@ -51,6 +51,9 @@ defmodule Lacuna.Backend.Session do
   @doc "Record an authentication failure and return whether callers should pause."
   def record_auth_failure, do: GenServer.call(__MODULE__, :record_auth_failure)
 
+  @doc "Forget the persisted session cache, if configured."
+  def clear_cache, do: GenServer.cast(__MODULE__, :clear_cache)
+
   @doc "Replace the cookie jar in-place. Called by the API client after every response."
   def update_cookie(cookie) when is_binary(cookie),
     do: GenServer.cast(__MODULE__, {:update_cookie, cookie})
@@ -83,7 +86,8 @@ defmodule Lacuna.Backend.Session do
 
   @impl true
   def handle_call({:configure, email, password}, _from, state) do
-    {:reply, :ok, %{state | email: email, password: password, status: :idle}}
+    configured = %{state | email: email, password: password, status: :idle}
+    {:reply, :ok, restore_cached_session(configured)}
   end
 
   def handle_call(:current!, _from, state) do
@@ -142,8 +146,16 @@ defmodule Lacuna.Backend.Session do
   @impl true
   def handle_cast(:invalidate, state), do: {:noreply, %{state | status: :idle}}
 
-  def handle_cast({:update_cookie, cookie}, state),
-    do: {:noreply, %{state | cookie: cookie, session_id: cookie}}
+  def handle_cast(:clear_cache, state) do
+    clear_cached_session()
+    {:noreply, state}
+  end
+
+  def handle_cast({:update_cookie, cookie}, state) do
+    new = %{state | cookie: cookie, session_id: cookie}
+    persist_cached_session(new)
+    {:noreply, new}
+  end
 
   ## Internal
 
@@ -162,12 +174,101 @@ defmodule Lacuna.Backend.Session do
              user_id: user_id,
              ru_id: Map.get(login, :ru_id),
              uris: uris,
-             logged_in_at: DateTime.utc_now()
-         }}
+             logged_in_at: DateTime.utc_now(),
+             auth_failures: [],
+             auth_paused_until: nil
+         }
+         |> tap(&persist_cached_session/1)}
 
       {:error, _} = err ->
         err
     end
+  end
+
+  defp restore_cached_session(state) do
+    with path when is_binary(path) and path != "" <- cache_path(),
+         {:ok, raw} <- File.read(path),
+         {:ok, data} <- Jason.decode(raw),
+         :ok <- cache_context_matches?(data),
+         {:ok, logged_in_at} <- parse_cached_time(data["logged_in_at"]),
+         true <- cache_fresh?(logged_in_at),
+         cookie when is_binary(cookie) and cookie != "" <- data["cookie"] do
+      Logger.info("Restored cached booking backend session")
+
+      %{
+        state
+        | status: :ok,
+          cookie: cookie,
+          session_id: data["session_id"] || cookie,
+          comm_id: data["comm_id"],
+          user_id: data["user_id"],
+          ru_id: data["ru_id"],
+          uris: data["uris"] || [],
+          logged_in_at: logged_in_at
+      }
+    else
+      _ -> state
+    end
+  end
+
+  defp persist_cached_session(%{status: :ok, cookie: cookie} = state)
+       when is_binary(cookie) and cookie != "" do
+    with path when is_binary(path) and path != "" <- cache_path(),
+         :ok <- File.mkdir_p(Path.dirname(path)) do
+      data = %{
+        cookie: state.cookie,
+        session_id: state.session_id,
+        comm_id: state.comm_id,
+        user_id: state.user_id,
+        ru_id: state.ru_id,
+        uris: state.uris,
+        logged_in_at: state.logged_in_at && DateTime.to_iso8601(state.logged_in_at),
+        backend_base_url: Contract.base_url(),
+        backend_client_package: Contract.client_package(),
+        backend_client_build: Contract.client_build()
+      }
+
+      File.write!(path, Jason.encode!(data))
+      File.chmod(path, 0o600)
+    end
+  rescue
+    e -> Logger.debug("Session cache write failed: #{Exception.message(e)}")
+  end
+
+  defp persist_cached_session(_), do: :ok
+
+  defp clear_cached_session do
+    with path when is_binary(path) and path != "" <- cache_path() do
+      File.rm(path)
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp cache_path, do: Application.get_env(:lacuna, :session_cache_path)
+
+  defp cache_context_matches?(data) do
+    if data["backend_base_url"] == Contract.base_url() and
+         data["backend_client_package"] == Contract.client_package() and
+         data["backend_client_build"] == Contract.client_build() do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp parse_cached_time(nil), do: {:error, :missing_time}
+
+  defp parse_cached_time(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      error -> error
+    end
+  end
+
+  defp cache_fresh?(%DateTime{} = logged_in_at) do
+    max_age = Application.get_env(:lacuna, :session_cache_max_age_minutes, 43_200)
+    DateTime.diff(DateTime.utc_now(), logged_in_at, :minute) < max_age
   end
 
   defp log_login_failure(reply, reason) do
