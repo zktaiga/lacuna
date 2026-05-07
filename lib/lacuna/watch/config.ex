@@ -93,6 +93,14 @@ defmodule Lacuna.Watch.Config do
 
   def windows, do: @windows
 
+  @doc "Return the currently selected watch weekdays. Empty means any day."
+  @spec weekdays() :: [String.t()]
+  def weekdays, do: get().weekdays
+
+  @doc "Test whether a date can match the active watch weekday filter."
+  @spec date_matches_weekday?(Date.t()) :: boolean()
+  def date_matches_weekday?(%Date{} = date), do: date_weekday_ok?(date, weekdays())
+
   @doc "Test whether a slot matches the active watch."
   @spec matches?(Slot.t()) :: boolean()
   def matches?(%Slot{} = slot) do
@@ -117,8 +125,12 @@ defmodule Lacuna.Watch.Config do
 
   defp weekday_ok?(_slot, []), do: true
 
-  defp weekday_ok?(%Slot{date: d}, list) do
-    short = day_short(Date.day_of_week(d))
+  defp weekday_ok?(%Slot{date: d}, list), do: date_weekday_ok?(d, list)
+
+  defp date_weekday_ok?(_date, []), do: true
+
+  defp date_weekday_ok?(%Date{} = date, list) do
+    short = day_short(Date.day_of_week(date))
     Enum.any?(list, fn x -> String.downcase(String.slice(x, 0, 3)) == String.downcase(short) end)
   end
 
