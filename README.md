@@ -59,7 +59,7 @@ watch filters:
 
 - window: morning, afternoon, evening, or any time. evening starts at 18:00.
 - days: any day or selected weekdays.
-- ends: today, tomorrow, 7 days, or manually.
+- when: today, tomorrow, weekend, any day, or custom weekdays.
 - stop: at slot start, T-30m, or T-1h. this suppresses slots that are already too close to starting.
 - mode: alert only, or opt-in auto-book.
 

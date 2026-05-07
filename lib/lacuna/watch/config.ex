@@ -5,6 +5,7 @@ defmodule Lacuna.Watch.Config do
 
   Configuration set via the `/watch` interactive flow:
 
+    * `date_preset` — `nil | :today | :tomorrow | :weekend`
     * `weekdays`  — `[]` (any) or `["Sat","Sun"]`
     * `window`    — `"morning" | "afternoon" | "evening" | "any"`
     * `expires_at` — optional; nil = until manually disabled
@@ -23,6 +24,7 @@ defmodule Lacuna.Watch.Config do
   @type window :: :morning | :afternoon | :evening | :any
   @type t :: %__MODULE__{
           active?: boolean(),
+          date_preset: :today | :tomorrow | :weekend | nil,
           weekdays: [String.t()],
           window: window(),
           expires_at: DateTime.t() | nil,
@@ -31,6 +33,7 @@ defmodule Lacuna.Watch.Config do
         }
 
   defstruct active?: false,
+            date_preset: nil,
             weekdays: [],
             window: :any,
             expires_at: nil,
@@ -55,6 +58,9 @@ defmodule Lacuna.Watch.Config do
 
   def set_window(window) when window in [:morning, :afternoon, :evening, :any],
     do: GenServer.call(__MODULE__, {:set_window, window})
+
+  def set_date_preset(preset) when preset in [:today, :tomorrow, :weekend, nil],
+    do: GenServer.call(__MODULE__, {:set_date_preset, preset})
 
   def set_weekdays(list) when is_list(list),
     do: GenServer.call(__MODULE__, {:set_weekdays, list})
@@ -97,9 +103,9 @@ defmodule Lacuna.Watch.Config do
   @spec weekdays() :: [String.t()]
   def weekdays, do: get().weekdays
 
-  @doc "Test whether a date can match the active watch weekday filter."
+  @doc "Test whether a date can match the active watch date filter."
   @spec date_matches_weekday?(Date.t()) :: boolean()
-  def date_matches_weekday?(%Date{} = date), do: date_weekday_ok?(date, weekdays())
+  def date_matches_weekday?(%Date{} = date), do: date_ok?(date, get())
 
   @doc "Test whether a slot matches the active watch."
   @spec matches?(Slot.t()) :: boolean()
@@ -109,7 +115,7 @@ defmodule Lacuna.Watch.Config do
     cond do
       not cfg.active? -> false
       expired?(cfg) -> false
-      not weekday_ok?(slot, cfg.weekdays) -> false
+      not date_ok?(slot.date, cfg) -> false
       not window_ok?(slot, cfg.window) -> false
       past_stop_before_start?(slot, cfg.stop_before_start_minutes) -> false
       true -> true
@@ -123,9 +129,14 @@ defmodule Lacuna.Watch.Config do
   defp expired?(%{expires_at: %DateTime{} = at}),
     do: DateTime.compare(DateTime.utc_now(), at) != :lt
 
-  defp weekday_ok?(_slot, []), do: true
+  defp date_ok?(date, %{date_preset: :today}),
+    do: Date.compare(date, Lacuna.Clock.local_today()) == :eq
 
-  defp weekday_ok?(%Slot{date: d}, list), do: date_weekday_ok?(d, list)
+  defp date_ok?(date, %{date_preset: :tomorrow}),
+    do: Date.compare(date, Date.add(Lacuna.Clock.local_today(), 1)) == :eq
+
+  defp date_ok?(date, %{date_preset: :weekend}), do: Date.day_of_week(date) in [6, 7]
+  defp date_ok?(date, %{weekdays: weekdays}), do: date_weekday_ok?(date, weekdays)
 
   defp date_weekday_ok?(_date, []), do: true
 
@@ -184,8 +195,12 @@ defmodule Lacuna.Watch.Config do
 
   def handle_call({:set_window, w}, _from, s), do: {:reply, %{s | window: w}, %{s | window: w}}
 
+  def handle_call({:set_date_preset, preset}, _from, s),
+    do:
+      {:reply, %{s | date_preset: preset, weekdays: []}, %{s | date_preset: preset, weekdays: []}}
+
   def handle_call({:set_weekdays, list}, _from, s),
-    do: {:reply, %{s | weekdays: list}, %{s | weekdays: list}}
+    do: {:reply, %{s | date_preset: nil, weekdays: list}, %{s | date_preset: nil, weekdays: list}}
 
   def handle_call({:set_expires, at}, _from, s),
     do: {:reply, %{s | expires_at: at}, %{s | expires_at: at}}

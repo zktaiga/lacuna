@@ -1,18 +1,18 @@
 defmodule Lacuna.Telegram.WatchView do
   @moduledoc """
   `/watch` flow. One single, persistently-edited message that toggles the
-  active watch on/off and exposes the time-window, weekday, cutoff, and
-  auto-book filters.
+  active watch on/off and exposes date, time-window, cutoff, and auto-book
+  filters.
 
       ┌──────────────────────────────┐
       │ Watch: ON · until ∞          │
       │ Window: Evening (18–22)      │
-      │ Days: Sat, Sun               │
+      │ When: Today                  │
       │                              │
       │ [Toggle off]                 │
       │ Window: [M][A][E][Any]       │
-      │ Days:  [M][T][W][T][F][S][S] │
-      │ Ends:  [Today][Tomorrow][7 days][Manual] │
+      │ When:  [Today][Tomorrow][Weekend][Any] │
+      │ Custom:[M][T][W][T][F][S][S] │
       │ Notice: [Last minute][T-30m][T-1h] │
       │ Action: [Alert][Auto-book]         │
       └──────────────────────────────┘
@@ -79,11 +79,7 @@ defmodule Lacuna.Telegram.WatchView do
           "#{Calendar.strftime(local, "%a %d %b · %H:%M")}"
       end
 
-    days =
-      case cfg.weekdays do
-        [] -> "Any day"
-        list -> Enum.join(list, ", ")
-      end
+    days = when_label(cfg)
 
     {lo, hi} = Config.window_range(cfg.window)
     cutoff = cutoff_label(cfg.stop_before_start_minutes)
@@ -94,43 +90,23 @@ defmodule Lacuna.Telegram.WatchView do
 
     Status:  #{state}
     Looking: #{days} · #{Config.window_label(cfg.window)} #{pad(lo)}:00–#{pad(hi)}:00
-    Expires: #{ttl}
+    Ends:    #{ttl}
     Notice:  #{cutoff}
     Action:  #{mode}
     """
   end
 
   defp render_markup(cfg) do
-    toggle_text = if cfg.active?, do: "🔘 Turn off", else: "🟢 Turn on"
+    toggle_text = if cfg.active?, do: "🔘 Turn off", else: "🟢 Turn on watch"
 
     rows =
       [
         # Toggle
         [%ExGram.Model.InlineKeyboardButton{text: toggle_text, callback_data: "watch:toggle"}],
-
-        # Time-window selector (M / A / E / Any)
-        windows_row(cfg),
-
-        # Day selector — split across 2 rows for readability
+        when_preset_row(cfg),
         weekdays_row(cfg, 0..3),
-        weekdays_row(cfg, 4..6) ++
-          [
-            %ExGram.Model.InlineKeyboardButton{
-              text: any_day_label(cfg),
-              callback_data: "watch:days:any"
-            }
-          ],
-
-        # Expiry shortcuts
-        [
-          %ExGram.Model.InlineKeyboardButton{text: "Today", callback_data: "watch:ttl:today"},
-          %ExGram.Model.InlineKeyboardButton{
-            text: "Tomorrow",
-            callback_data: "watch:ttl:tomorrow"
-          },
-          %ExGram.Model.InlineKeyboardButton{text: "7 days", callback_data: "watch:ttl:7d"},
-          %ExGram.Model.InlineKeyboardButton{text: "Manual", callback_data: "watch:ttl:none"}
-        ],
+        weekdays_row(cfg, 4..6),
+        windows_row(cfg),
         cutoff_row(cfg),
         mode_row(cfg),
         [
@@ -139,6 +115,22 @@ defmodule Lacuna.Telegram.WatchView do
       ]
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
+  end
+
+  defp when_preset_row(cfg) do
+    [
+      preset_button(cfg, :today, "Today"),
+      preset_button(cfg, :tomorrow, "Tomorrow"),
+      preset_button(cfg, :weekend, "Weekend"),
+      preset_button(cfg, nil, "Any")
+    ]
+  end
+
+  defp preset_button(cfg, preset, label) do
+    selected? = cfg.date_preset == preset and (not is_nil(preset) or cfg.weekdays == [])
+    text = if selected?, do: "✓ #{label}", else: label
+    spec = if is_nil(preset), do: "any", else: to_string(preset)
+    %ExGram.Model.InlineKeyboardButton{text: text, callback_data: "watch:when:#{spec}"}
   end
 
   defp windows_row(cfg) do
@@ -190,8 +182,11 @@ defmodule Lacuna.Telegram.WatchView do
   defp cutoff_label(60), do: "at least 1 hour before start"
   defp cutoff_label(minutes), do: "#{minutes} minutes before slot start"
 
-  defp any_day_label(%{weekdays: []}), do: "✓Any"
-  defp any_day_label(_), do: "Any"
+  defp when_label(%{date_preset: :today}), do: "Today"
+  defp when_label(%{date_preset: :tomorrow}), do: "Tomorrow"
+  defp when_label(%{date_preset: :weekend}), do: "Weekend"
+  defp when_label(%{weekdays: []}), do: "Any day"
+  defp when_label(%{weekdays: list}), do: Enum.join(list, ", ")
 
   defp pad(n) when n < 10, do: "0#{n}"
   defp pad(n), do: "#{n}"
