@@ -22,7 +22,9 @@ defmodule Lacuna.Backend.Session do
             user_id: nil,
             ru_id: nil,
             uris: [],
-            logged_in_at: nil
+            logged_in_at: nil,
+            auth_failures: [],
+            auth_paused_until: nil
 
   @type t :: %__MODULE__{}
 
@@ -45,6 +47,9 @@ defmodule Lacuna.Backend.Session do
 
   @doc "Force a re-login on the next request (e.g., after we see a 401-ish payload)."
   def invalidate, do: GenServer.cast(__MODULE__, :invalidate)
+
+  @doc "Record an authentication failure and return whether callers should pause."
+  def record_auth_failure, do: GenServer.call(__MODULE__, :record_auth_failure)
 
   @doc "Replace the cookie jar in-place. Called by the API client after every response."
   def update_cookie(cookie) when is_binary(cookie),
@@ -82,6 +87,38 @@ defmodule Lacuna.Backend.Session do
   end
 
   def handle_call(:current!, _from, state) do
+    case state.auth_paused_until do
+      %DateTime{} = until ->
+        if DateTime.compare(DateTime.utc_now(), until) == :lt do
+          {:reply, {:error, {:auth_backoff, until}}, state}
+        else
+          current_unpaused(%{state | auth_paused_until: nil, auth_failures: []})
+        end
+
+      _ ->
+        current_unpaused(state)
+    end
+  end
+
+  def handle_call(:record_auth_failure, _from, state) do
+    now = DateTime.utc_now()
+    recent = [now | Enum.filter(state.auth_failures, &(DateTime.diff(now, &1, :second) < 120))]
+
+    if length(recent) >= 3 do
+      until = DateTime.add(now, 5 * 60, :second)
+
+      Logger.warning(
+        "Repeated authentication failures, pausing backend login until #{DateTime.to_iso8601(until)}"
+      )
+
+      {:reply, {:pause, until},
+       %{state | auth_failures: recent, auth_paused_until: until, status: :idle}}
+    else
+      {:reply, :ok, %{state | auth_failures: recent}}
+    end
+  end
+
+  defp current_unpaused(state) do
     case state do
       %{status: :ok} ->
         {:reply, state, state}
@@ -93,7 +130,8 @@ defmodule Lacuna.Backend.Session do
       _ ->
         case do_login(state) do
           {:ok, fresh} ->
-            {:reply, fresh, fresh}
+            {:reply, %{fresh | auth_failures: [], auth_paused_until: nil},
+             %{fresh | auth_failures: [], auth_paused_until: nil}}
 
           {:error, reason} = err ->
             {:reply, err, %{state | status: :idle}} |> log_login_failure(reason)
