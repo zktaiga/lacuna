@@ -4,23 +4,10 @@ defmodule Lacuna.Telegram.WatchView do
   active watch on/off and exposes date, time-window, cutoff, and auto-book
   filters.
 
-      ┌──────────────────────────────┐
-      │ Watch: ON · until ∞          │
-      │ Window: Evening (18–22)      │
-      │ When: Today                  │
-      │                              │
-      │ [Toggle off]                 │
-      │ Window: [M][A][E][Any]       │
-      │ When:  [Today][Tomorrow][Weekend][Any] │
-      │ Custom:[M][T][W][T][F][S][S] │
-      │ Notice: [Last minute][T-30m][T-1h] │
-      │ Action: [Alert][Auto-book]         │
-      └──────────────────────────────┘
-
   The display always reflects the current `Lacuna.Watch.Config` state.
   """
 
-  alias Lacuna.{Watch.Config, Slot}
+  alias Lacuna.Watch.Config
 
   @weekday_keys ~w(Mon Tue Wed Thu Fri Sat Sun)
 
@@ -51,70 +38,45 @@ defmodule Lacuna.Telegram.WatchView do
   ## Render
 
   defp render_text(cfg) do
-    state =
-      cond do
-        not cfg.active? ->
-          "🔘 *Off*"
-
-        Config.matches?(%Slot{
-          facility_id: "x",
-          facility_name: "x",
-          date: ~D[2099-01-01],
-          start_time: ~T[12:00:00],
-          end_time: ~T[13:00:00]
-        }) ->
-          "🟢 *On*"
-
-        true ->
-          "🟢 *On*"
-      end
-
-    ttl =
-      case cfg.expires_at do
-        nil ->
-          if cfg.active?, do: "until you turn it off", else: "—"
-
-        %DateTime{} = at ->
-          local = at |> DateTime.add(4 * 3600, :second) |> DateTime.to_naive()
-          "#{Calendar.strftime(local, "%a %d %b · %H:%M")}"
-      end
-
-    days = when_label(cfg)
+    title = if cfg.active?, do: "👀 *Standing watch is ON*", else: "👀 *Set up a watch*"
+    hint = if cfg.active?, do: "", else: "\nNothing starts until you tap *Turn on watch*.\n"
 
     {lo, hi} = Config.window_range(cfg.window)
-    cutoff = cutoff_label(cfg.stop_before_start_minutes)
-    mode = if cfg.auto_book?, do: "auto-book first match", else: "send alert with Book button"
 
     """
-    *Standing watch*
-
-    Status:  #{state}
-    Looking: #{days} · #{Config.window_label(cfg.window)} #{pad(lo)}:00–#{pad(hi)}:00
-    Ends:    #{ttl}
-    Notice:  #{cutoff}
-    Action:  #{mode}
+    #{title}#{hint}
+    🎯 #{when_label(cfg)} · #{String.downcase(Config.window_label(cfg.window))}
+    🕕 #{pad(lo)}:00–#{pad(hi)}:00
+    🔔 #{cutoff_label(cfg.stop_before_start_minutes)}
+    ⏳ #{ends_label(cfg)}
+    🧾 #{action_label(cfg)}
     """
   end
 
   defp render_markup(cfg) do
-    toggle_text = if cfg.active?, do: "🔘 Turn off", else: "🟢 Turn on watch"
+    toggle_text = if cfg.active?, do: "🔴 Turn off watch", else: "🟢 Turn on watch"
 
-    rows =
-      [
-        # Toggle
-        [%ExGram.Model.InlineKeyboardButton{text: toggle_text, callback_data: "watch:toggle"}],
-        when_preset_row(cfg),
-        weekdays_row(cfg, 0..3),
-        weekdays_row(cfg, 4..6),
-        windows_row(cfg),
-        cutoff_row(cfg),
-        mode_row(cfg),
-        [
-          %ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "watch:close"}
-        ]
-      ]
+    rows = [
+      section_row("When"),
+      when_preset_row(cfg),
+      section_row("Custom weekdays"),
+      weekdays_row(cfg, 0..3),
+      weekdays_row(cfg, 4..6),
+      section_row("Time"),
+      windows_row(cfg),
+      section_row("Notice"),
+      cutoff_row(cfg),
+      section_row("Action"),
+      mode_row(cfg),
+      [%ExGram.Model.InlineKeyboardButton{text: toggle_text, callback_data: "watch:toggle"}],
+      [%ExGram.Model.InlineKeyboardButton{text: "Done", callback_data: "watch:close"}]
+    ]
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
+  end
+
+  defp section_row(label) do
+    [%ExGram.Model.InlineKeyboardButton{text: "— #{label} —", callback_data: "watch:noop"}]
   end
 
   defp when_preset_row(cfg) do
@@ -128,7 +90,7 @@ defmodule Lacuna.Telegram.WatchView do
 
   defp preset_button(cfg, preset, label) do
     selected? = cfg.date_preset == preset and (not is_nil(preset) or cfg.weekdays == [])
-    text = if selected?, do: "✓ #{label}", else: label
+    text = if selected?, do: "✅ #{label}", else: label
     spec = if is_nil(preset), do: "any", else: to_string(preset)
     %ExGram.Model.InlineKeyboardButton{text: text, callback_data: "watch:when:#{spec}"}
   end
@@ -136,7 +98,7 @@ defmodule Lacuna.Telegram.WatchView do
   defp windows_row(cfg) do
     for key <- [:morning, :afternoon, :evening, :any] do
       label = Config.window_label(key)
-      display = if key == cfg.window, do: "✓ #{label}", else: label
+      display = if key == cfg.window, do: "✅ #{label}", else: label
       %ExGram.Model.InlineKeyboardButton{text: display, callback_data: "watch:w:#{key}"}
     end
   end
@@ -146,8 +108,7 @@ defmodule Lacuna.Telegram.WatchView do
     |> Enum.with_index()
     |> Enum.filter(fn {_, i} -> i in range end)
     |> Enum.map(fn {day, _} ->
-      on? = day in cfg.weekdays
-      label = if on?, do: "✓#{day}", else: day
+      label = if day in cfg.weekdays, do: "✅ #{day}", else: day
       %ExGram.Model.InlineKeyboardButton{text: label, callback_data: "watch:days:#{day}"}
     end)
   end
@@ -162,14 +123,14 @@ defmodule Lacuna.Telegram.WatchView do
 
   defp cutoff_button(cfg, value, label) do
     selected? = cfg.stop_before_start_minutes == value
-    text = if selected?, do: "✓ #{label}", else: label
+    text = if selected?, do: "✅ #{label}", else: label
     spec = if is_nil(value), do: "start", else: to_string(value)
     %ExGram.Model.InlineKeyboardButton{text: text, callback_data: "watch:cutoff:#{spec}"}
   end
 
   defp mode_row(cfg) do
-    alert = if cfg.auto_book?, do: "🔔 Alert only", else: "✓ 🔔 Alert only"
-    auto = if cfg.auto_book?, do: "✓ ⚡ Auto-book", else: "⚡ Auto-book"
+    alert = if cfg.auto_book?, do: "🔔 Alert only", else: "✅ 🔔 Alert only"
+    auto = if cfg.auto_book?, do: "✅ ⚡ Auto-book", else: "⚡ Auto-book"
 
     [
       %ExGram.Model.InlineKeyboardButton{text: alert, callback_data: "watch:auto:off"},
@@ -177,10 +138,18 @@ defmodule Lacuna.Telegram.WatchView do
     ]
   end
 
-  defp cutoff_label(nil), do: "last-minute, until slot starts"
-  defp cutoff_label(30), do: "at least 30 minutes before start"
-  defp cutoff_label(60), do: "at least 1 hour before start"
-  defp cutoff_label(minutes), do: "#{minutes} minutes before slot start"
+  defp cutoff_label(nil), do: "Alert: until slot starts"
+  defp cutoff_label(30), do: "Alert: at least 30m before start"
+  defp cutoff_label(60), do: "Alert: at least 1h before start"
+  defp cutoff_label(minutes), do: "Alert: #{minutes}m before start"
+
+  defp action_label(%{auto_book?: true}), do: "Action: auto-book first match"
+  defp action_label(_cfg), do: "Action: send Book button"
+
+  defp ends_label(%{date_preset: :today}), do: "Turns off tonight"
+  defp ends_label(%{date_preset: :tomorrow}), do: "Turns off tomorrow night"
+  defp ends_label(%{date_preset: :weekend}), do: "Turns off after Sunday"
+  defp ends_label(_cfg), do: "Runs until you turn it off"
 
   defp when_label(%{date_preset: :today}), do: "Today"
   defp when_label(%{date_preset: :tomorrow}), do: "Tomorrow"
