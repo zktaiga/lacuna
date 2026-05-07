@@ -8,6 +8,14 @@ defmodule Lacuna.Watcher.PollerTest do
     :ok
   end
 
+  test "poll planning honors today date preset" do
+    Config.set_date_preset(:today)
+
+    days = Poller.planned_dates(Lacuna.Clock.local_today(), 7)
+
+    assert days == [Lacuna.Clock.local_today()]
+  end
+
   test "poll planning skips dates outside the watch weekday filter" do
     Config.set_weekdays(["Thu"])
 

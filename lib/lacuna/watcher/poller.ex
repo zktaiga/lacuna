@@ -108,7 +108,7 @@ defmodule Lacuna.Watcher.Poller do
 
     with {:ok, courts} <- ensure_courts(),
          {:ok, slots} <- fetch_all_slots(courts, prefs) do
-      now = State.from_slots(slots)
+      now = slots |> Enum.filter(&Watch.Config.matches?/1) |> State.from_slots()
 
       cond do
         not bootstrapped ->
@@ -192,7 +192,7 @@ defmodule Lacuna.Watcher.Poller do
   end
 
   defp fetch_all_slots(courts, prefs) do
-    days = planned_dates(Date.utc_today(), prefs.poll.lookahead_days)
+    days = planned_dates(Lacuna.Clock.local_today(), prefs.poll.lookahead_days)
 
     pairs = for c <- courts, d <- days, do: {c, d}
 
@@ -230,9 +230,7 @@ defmodule Lacuna.Watcher.Poller do
   defp jittered_request_delay(min, max), do: min + :rand.uniform(max - min + 1) - 1
 
   defp publish_events(opened, closed, _prefs) do
-    opened
-    |> Enum.filter(&Watch.Config.matches?/1)
-    |> Enum.each(fn slot -> Bus.publish({:slot_opened, slot}) end)
+    Enum.each(opened, fn slot -> Bus.publish({:slot_opened, slot}) end)
 
     Enum.each(closed, fn slot -> Bus.publish({:slot_closed, slot}) end)
   end
