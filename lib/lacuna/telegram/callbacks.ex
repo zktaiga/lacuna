@@ -10,7 +10,7 @@ defmodule Lacuna.Telegram.Callbacks do
   | `book:<key>`   | Book a slot from anywhere              |
   """
 
-  alias Lacuna.{Slot, Watch.Config}
+  alias Lacuna.{Clock, Slot, Watch.Config}
   alias Lacuna.Backend.{API, Availability, Session}
   alias Lacuna.Telegram.{BookingsView, Free, Menu, Views, WatchView}
   require Logger
@@ -113,9 +113,9 @@ defmodule Lacuna.Telegram.Callbacks do
     expires =
       case spec do
         "none" -> nil
-        "2h" -> DateTime.add(DateTime.utc_now(), 2 * 3600, :second)
-        "12h" -> DateTime.add(DateTime.utc_now(), 12 * 3600, :second)
-        "24h" -> DateTime.add(DateTime.utc_now(), 24 * 3600, :second)
+        "today" -> local_end_of_day(0)
+        "tomorrow" -> local_end_of_day(1)
+        "7d" -> local_end_of_day(6)
         _ -> nil
       end
 
@@ -192,6 +192,14 @@ defmodule Lacuna.Telegram.Callbacks do
   defp ack_text({:error, _}), do: "Failed"
 
   ## Helpers
+
+  defp local_end_of_day(days_from_today) do
+    Clock.local_today()
+    |> Date.add(days_from_today)
+    |> NaiveDateTime.new!(~T[23:59:59])
+    |> DateTime.from_naive!("Etc/UTC")
+    |> DateTime.add(-4 * 3600, :second)
+  end
 
   defp parse_time_url(s) do
     case String.split(s, "-") do
