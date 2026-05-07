@@ -156,11 +156,24 @@ defmodule Lacuna.Telegram.BookingsView do
         groups
         |> Map.values()
         |> List.flatten()
-        |> Enum.filter(fn b -> Map.get(b, "type") == "upcoming_bookings" end)
+        |> Enum.filter(&actionable_upcoming?/1)
         |> Enum.sort_by(fn b -> {Map.get(b, "start_date"), Map.get(b, "start_time")} end)
 
       {:ok, list}
     end
+  end
+
+  defp actionable_upcoming?(booking) do
+    Map.get(booking, "type") == "upcoming_bookings" and
+      booking_status(booking) not in ["cancelled", "canceled"]
+  end
+
+  defp booking_status(booking) do
+    booking
+    |> Map.get("status", "")
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
   end
 
   ## Rendering
