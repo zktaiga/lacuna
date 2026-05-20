@@ -200,11 +200,20 @@ defmodule Lacuna.Telegram.Callbacks do
   end
 
   defp reply_book(cq, %Slot{} = slot, {:error, reason}) do
-    edit_message(cq, "❌ Booking failed: #{Views.render_slot(slot)}\n`#{trunc_inspect(reason)}`")
+    edit_message(
+      cq,
+      "❌ Booking failed: #{Views.render_slot(slot)}\n#{format_booking_error(reason)}"
+    )
   end
 
   defp ack_text({:ok, _}), do: "Booked!"
   defp ack_text({:error, _}), do: "Failed"
+
+  defp format_booking_error({:booking_not_confirmed, _response}) do
+    "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
+  end
+
+  defp format_booking_error(reason), do: "`#{trunc_inspect(reason)}`"
 
   ## Helpers
 
