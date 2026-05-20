@@ -105,7 +105,7 @@ defmodule Lacuna.Telegram.Views do
       {:error, reason} ->
         ExGram.send_message(
           Access.configured_chat_id(),
-          "❌ *Auto-book failed*\n#{render_slot(slot)}\n`#{inspect(reason) |> String.slice(0, 200)}`",
+          "❌ *Auto-book failed*\n#{render_slot(slot)}\n#{format_booking_error(reason)}",
           parse_mode: "Markdown",
           reply_markup: book_keyboard([slot])
         )
@@ -113,6 +113,12 @@ defmodule Lacuna.Telegram.Views do
   end
 
   ## Helpers
+
+  defp format_booking_error({:booking_not_confirmed, _response}) do
+    "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
+  end
+
+  defp format_booking_error(reason), do: "`#{inspect(reason) |> String.slice(0, 200)}`"
 
   defp pad(n) when n < 10, do: "0#{n}"
   defp pad(n), do: "#{n}"

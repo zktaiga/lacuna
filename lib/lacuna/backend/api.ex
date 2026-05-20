@@ -184,7 +184,7 @@ defmodule Lacuna.Backend.API do
              session: session
            ),
          _ <- update_session_cookies(session, headers) do
-      {:ok, response}
+      unwrap_response(response)
     end
   end
 
