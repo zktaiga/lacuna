@@ -40,7 +40,7 @@ defmodule Lacuna.Watch.Config do
             stop_before_start_minutes: nil,
             auto_book?: false
 
-  @windows %{
+  @default_windows %{
     morning: {6, 12, "Morning"},
     afternoon: {12, 18, "Afternoon"},
     evening: {18, 22, "Evening"},
@@ -89,15 +89,19 @@ defmodule Lacuna.Watch.Config do
   end
 
   @doc "Return the human label for a window key."
-  def window_label(key), do: elem(Map.fetch!(@windows, key), 2)
+  def window_label(key), do: elem(Map.fetch!(windows(), key), 2)
 
   @doc "Return {start_hour, end_hour} for a window key."
   def window_range(key) do
-    {lo, hi, _} = Map.fetch!(@windows, key)
+    {lo, hi, _} = Map.fetch!(windows(), key)
     {lo, hi}
   end
 
-  def windows, do: @windows
+  def windows do
+    :lacuna
+    |> Application.get_env(:watch_windows, %{})
+    |> normalize_windows()
+  end
 
   @doc "Return the currently selected watch weekdays. Empty means any day."
   @spec weekdays() :: [String.t()]
@@ -146,10 +150,24 @@ defmodule Lacuna.Watch.Config do
   end
 
   defp window_ok?(%Slot{start_time: %Time{hour: h}, end_time: et}, window) do
-    {lo, hi, _} = Map.fetch!(@windows, window)
+    {lo, hi, _} = Map.fetch!(windows(), window)
     end_hour = if et.minute == 0, do: et.hour, else: et.hour + 1
     h >= lo and end_hour <= hi
   end
+
+  defp normalize_windows(overrides) when is_map(overrides) do
+    Map.merge(@default_windows, overrides, fn key, _default, override ->
+      normalize_window!(key, override)
+    end)
+  end
+
+  defp normalize_window!(_key, {lo, hi, label})
+       when is_integer(lo) and is_integer(hi) and is_binary(label) and lo >= 0 and hi <= 24 and
+              lo < hi,
+       do: {lo, hi, label}
+
+  defp normalize_window!(key, value),
+    do: raise(ArgumentError, "invalid watch window #{inspect(key)}: #{inspect(value)}")
 
   defp past_stop_before_start?(_slot, nil), do: false
 

@@ -25,6 +25,25 @@ group_chat_id =
 
 config :ex_gram, token: bot_token
 
+watch_windows = %{
+  morning: {
+    env!("LACUNA_WATCH_MORNING_START_HOUR", :integer, 6),
+    env!("LACUNA_WATCH_MORNING_END_HOUR", :integer, 12),
+    "Morning"
+  },
+  afternoon: {
+    env!("LACUNA_WATCH_AFTERNOON_START_HOUR", :integer, 12),
+    env!("LACUNA_WATCH_AFTERNOON_END_HOUR", :integer, 18),
+    "Afternoon"
+  },
+  evening: {
+    env!("LACUNA_WATCH_EVENING_START_HOUR", :integer, 18),
+    env!("LACUNA_WATCH_EVENING_END_HOUR", :integer, 22),
+    "Evening"
+  },
+  any: {0, 24, "Any time"}
+}
+
 config :lacuna,
   telegram_bot_token: bot_token,
   telegram_group_chat_id: group_chat_id,
@@ -37,4 +56,5 @@ config :lacuna,
   session_cache_max_age_minutes: env!("LACUNA_SESSION_CACHE_MAX_AGE_MINUTES", :integer, 43_200),
   log_provider_requests: env!("LACUNA_LOG_PROVIDER_REQUESTS", :boolean, false),
   availability_cache_ttl_seconds: env!("LACUNA_AVAILABILITY_CACHE_TTL_SECONDS", :integer, 180),
-  bookings_cache_ttl_seconds: env!("LACUNA_BOOKINGS_CACHE_TTL_SECONDS", :integer, 30)
+  bookings_cache_ttl_seconds: env!("LACUNA_BOOKINGS_CACHE_TTL_SECONDS", :integer, 30),
+  watch_windows: watch_windows
