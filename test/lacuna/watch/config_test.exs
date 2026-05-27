@@ -4,12 +4,24 @@ defmodule Lacuna.Watch.ConfigTest do
   alias Lacuna.{Slot, Watch.Config}
 
   setup do
+    old_windows = Application.get_env(:lacuna, :watch_windows)
+    Application.delete_env(:lacuna, :watch_windows)
+
     start_supervised!(Config)
+
+    on_exit(fn -> restore_env(:watch_windows, old_windows) end)
     :ok
   end
 
   test "evening starts at 18:00 by default" do
     assert Config.window_range(:evening) == {18, 22}
+  end
+
+  test "windows can be configured" do
+    Application.put_env(:lacuna, :watch_windows, %{evening: {19, 22, "Evening"}})
+
+    assert Config.window_range(:evening) == {19, 22}
+    assert Config.window_label(:evening) == "Evening"
   end
 
   test "auto-book is opt-in and disabling a watch resets it" do
@@ -62,6 +74,9 @@ defmodule Lacuna.Watch.ConfigTest do
       end_time: ~T[19:00:00]
     }
   end
+
+  defp restore_env(key, nil), do: Application.delete_env(:lacuna, key)
+  defp restore_env(key, value), do: Application.put_env(:lacuna, key, value)
 
   defp slot_at(%DateTime{} = utc) do
     dubai = DateTime.add(utc, 4 * 3600, :second)

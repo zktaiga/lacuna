@@ -57,7 +57,7 @@ watch mode is idle until enabled from `/watch`. the first successful poll record
 
 watch filters:
 
-- window: morning, afternoon, evening, or any time. evening starts at 18:00.
+- window: morning, afternoon, evening, or any time. by default: morning 06:00-12:00, afternoon 12:00-18:00, evening 18:00-22:00. set `LACUNA_WATCH_*_HOUR` env vars to override.
 - days: any day or selected weekdays.
 - when: today, tomorrow, weekend, any day, or custom weekdays.
 - stop: at slot start, T-30m, or T-1h. this suppresses slots that are already too close to starting.
