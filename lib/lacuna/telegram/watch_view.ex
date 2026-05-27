@@ -41,12 +41,9 @@ defmodule Lacuna.Telegram.WatchView do
     title = if cfg.active?, do: "👀 *Standing watch is ON*", else: "👀 *Set up a watch*"
     hint = if cfg.active?, do: "", else: "\nNothing starts until you tap *Turn on watch*.\n"
 
-    {lo, hi} = Config.window_range(cfg.window)
-
     """
     #{title}#{hint}
-    🎯 #{when_label(cfg)} · #{String.downcase(Config.window_label(cfg.window))}
-    🕕 #{pad(lo)}:00–#{pad(hi)}:00
+    🎯 #{when_label(cfg)} · #{String.downcase(window_label_with_range(cfg.window))}
     🔔 #{cutoff_label(cfg.stop_before_start_minutes)}
     ⏳ #{ends_label(cfg)}
     🧾 #{action_label(cfg)}
@@ -97,7 +94,7 @@ defmodule Lacuna.Telegram.WatchView do
 
   defp windows_row(cfg) do
     for key <- [:morning, :afternoon, :evening, :any] do
-      label = Config.window_label(key)
+      label = window_label_with_range(key)
       display = if key == cfg.window, do: "✅ #{label}", else: label
       %ExGram.Model.InlineKeyboardButton{text: display, callback_data: "watch:w:#{key}"}
     end
@@ -150,6 +147,13 @@ defmodule Lacuna.Telegram.WatchView do
   defp ends_label(%{date_preset: :tomorrow}), do: "Turns off tomorrow night"
   defp ends_label(%{date_preset: :weekend}), do: "Turns off after Sunday"
   defp ends_label(_cfg), do: "Runs until you turn it off"
+
+  defp window_label_with_range(:any), do: Config.window_label(:any)
+
+  defp window_label_with_range(key) do
+    {lo, hi} = Config.window_range(key)
+    "#{Config.window_label(key)} #{pad(lo)}:00–#{pad(hi)}:00"
+  end
 
   defp when_label(%{date_preset: :today}), do: "Today"
   defp when_label(%{date_preset: :tomorrow}), do: "Tomorrow"
