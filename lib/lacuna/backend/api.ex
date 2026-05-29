@@ -374,20 +374,21 @@ defmodule Lacuna.Backend.API do
   defp decode(other), do: {:ok, other}
 
   defp unwrap_response(%{
-         "m_app_response" => %{"m_app_status_code" => 200, "m_response_data" => nil}
-       }),
+         "m_app_response" => %{"m_app_status_code" => code, "m_response_data" => nil}
+       })
+       when code in [200, "200"],
        do: {:ok, %{}}
 
   defp unwrap_response(%{
-         "m_app_response" => %{"m_app_status_code" => 200, "m_response_data" => data}
+         "m_app_response" => %{"m_app_status_code" => code, "m_response_data" => data}
        })
-       when is_map(data),
+       when code in [200, "200"] and is_map(data),
        do: {:ok, data}
 
   defp unwrap_response(%{
-         "m_app_response" => %{"m_app_status_code" => 200, "m_response_data" => data}
+         "m_app_response" => %{"m_app_status_code" => code, "m_response_data" => data}
        })
-       when is_binary(data) do
+       when code in [200, "200"] and is_binary(data) do
     case Jason.decode(data) do
       {:ok, inner} -> {:ok, inner}
       {:error, _} -> {:ok, data}
@@ -402,9 +403,10 @@ defmodule Lacuna.Backend.API do
   defp unwrap_response(other), do: {:error, {:envelope_unexpected, other}}
 
   defp parse_login_response(
-         %{"m_app_response" => %{"m_app_status_code" => 200, "m_response_data" => data}},
+         %{"m_app_response" => %{"m_app_status_code" => code, "m_response_data" => data}},
          headers
-       ) do
+       )
+       when code in [200, "200"] do
     cookie = build_cookie_header(headers)
 
     case Jason.decode(data) do
