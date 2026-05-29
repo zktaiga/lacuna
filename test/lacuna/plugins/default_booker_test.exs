@@ -37,6 +37,14 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
              API.make_booking(session, %{"facility_id" => "court-a"})
   end
 
+  test "make_booking accepts string success codes with empty response data", %{bypass: bypass} do
+    Bypass.expect(bypass, &route(&1, booking_response: app_success_string(nil)))
+
+    session = Session.current!()
+
+    assert {:ok, %{}} = API.make_booking(session, %{"facility_id" => "court-a"})
+  end
+
   test "book fails when the provider accepts the request but no matching booking appears", %{
     bypass: bypass,
     slot: slot
@@ -144,6 +152,17 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
         "m_app_status_code" => code,
         "m_app_status_msg" => message,
         "m_response_data" => nil
+      }
+    }
+  end
+
+  defp app_success_string(data) do
+    %{
+      "m_system_status_code" => 200,
+      "m_app_response" => %{
+        "m_app_status_code" => "200",
+        "m_app_status_msg" => nil,
+        "m_response_data" => data
       }
     }
   end
