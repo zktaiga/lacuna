@@ -19,7 +19,7 @@ defmodule Lacuna.Telegram.Menu do
     """
     *Lacuna*
 
-    What do you want to do?
+    Choose where to go.
     """
   end
 
@@ -27,7 +27,7 @@ defmodule Lacuna.Telegram.Menu do
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
         [
-          %ExGram.Model.InlineKeyboardButton{text: "🔎 Find slots", callback_data: "menu:free"},
+          %ExGram.Model.InlineKeyboardButton{text: "🔎 Free slots", callback_data: "menu:free"},
           %ExGram.Model.InlineKeyboardButton{text: "🎯 Hunts", callback_data: "menu:hunts"}
         ],
         [

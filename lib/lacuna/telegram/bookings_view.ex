@@ -23,8 +23,9 @@ defmodule Lacuna.Telegram.BookingsView do
   def send_list(chat_id) do
     case fetch_upcoming() do
       {:ok, []} ->
-        ExGram.send_message(chat_id, "*Bookings*\n\nNo upcoming bookings.",
-          parse_mode: "Markdown"
+        ExGram.send_message(chat_id, "📋 *Bookings*\n\nNo upcoming bookings.",
+          parse_mode: "Markdown",
+          reply_markup: nav_keyboard()
         )
 
       {:ok, list} ->
@@ -34,8 +35,9 @@ defmodule Lacuna.Telegram.BookingsView do
         )
 
       {:error, reason} ->
-        ExGram.send_message(chat_id, "Couldn't fetch bookings: `#{trunc_inspect(reason)}`",
-          parse_mode: "Markdown"
+        ExGram.send_message(chat_id, "⚠️ Couldn't fetch bookings: `#{trunc_inspect(reason)}`",
+          parse_mode: "Markdown",
+          reply_markup: nav_keyboard()
         )
     end
 
@@ -47,10 +49,11 @@ defmodule Lacuna.Telegram.BookingsView do
   def edit_to_list(message) do
     case fetch_upcoming() do
       {:ok, []} ->
-        ExGram.edit_message_text("*Bookings*\n\nNo upcoming bookings.",
+        ExGram.edit_message_text("📋 *Bookings*\n\nNo upcoming bookings.",
           chat_id: message.chat.id,
           message_id: message.message_id,
-          parse_mode: "Markdown"
+          parse_mode: "Markdown",
+          reply_markup: nav_keyboard()
         )
 
       {:ok, list} ->
@@ -62,10 +65,11 @@ defmodule Lacuna.Telegram.BookingsView do
         )
 
       {:error, reason} ->
-        ExGram.edit_message_text("Couldn't fetch bookings: `#{trunc_inspect(reason)}`",
+        ExGram.edit_message_text("⚠️ Couldn't fetch bookings: `#{trunc_inspect(reason)}`",
           chat_id: message.chat.id,
           message_id: message.message_id,
-          parse_mode: "Markdown"
+          parse_mode: "Markdown",
+          reply_markup: nav_keyboard()
         )
     end
   end
@@ -92,7 +96,8 @@ defmodule Lacuna.Telegram.BookingsView do
                   callback_data: "bk:do:#{booking_id}"
                 },
                 %ExGram.Model.InlineKeyboardButton{text: "Keep it", callback_data: "bk:list"}
-              ]
+              ],
+              [%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]
             ]
           }
 
@@ -125,7 +130,8 @@ defmodule Lacuna.Telegram.BookingsView do
           reply_markup: %ExGram.Model.InlineKeyboardMarkup{
             inline_keyboard: [
               [
-                %ExGram.Model.InlineKeyboardButton{text: "← Bookings", callback_data: "bk:list"}
+                %ExGram.Model.InlineKeyboardButton{text: "← Bookings", callback_data: "bk:list"},
+                %ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}
               ]
             ]
           }
@@ -139,7 +145,8 @@ defmodule Lacuna.Telegram.BookingsView do
           reply_markup: %ExGram.Model.InlineKeyboardMarkup{
             inline_keyboard: [
               [
-                %ExGram.Model.InlineKeyboardButton{text: "← Bookings", callback_data: "bk:list"}
+                %ExGram.Model.InlineKeyboardButton{text: "← Bookings", callback_data: "bk:list"},
+                %ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}
               ]
             ]
           }
@@ -199,7 +206,7 @@ defmodule Lacuna.Telegram.BookingsView do
       |> Enum.with_index(1)
       |> Enum.map_join("\n\n", fn {b, i} -> "*#{i}.* #{render_one(b)}" end)
 
-    "*Bookings* (#{length(list)} upcoming)\n\n" <> body
+    "📋 *Bookings* (#{length(list)} upcoming)\n\n" <> body
   end
 
   defp list_keyboard(list) do
@@ -215,7 +222,15 @@ defmodule Lacuna.Telegram.BookingsView do
         ]
       end)
 
-    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ nav_rows()}
+  end
+
+  defp nav_keyboard do
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: nav_rows()}
+  end
+
+  defp nav_rows do
+    [[%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]]
   end
 
   defp render_one(b) do

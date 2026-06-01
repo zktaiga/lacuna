@@ -82,19 +82,23 @@ defmodule Lacuna.Telegram.Free do
         text = query_text(query, slots)
 
         if slots == [] do
-          ExGram.send_message(chat_id, text, parse_mode: "Markdown")
+          ExGram.send_message(chat_id, text,
+            parse_mode: "Markdown",
+            reply_markup: free_query_nav()
+          )
         else
           ExGram.send_message(chat_id, text,
             parse_mode: "Markdown",
-            reply_markup: Views.book_keyboard(slots)
+            reply_markup: query_keyboard(slots)
           )
         end
 
       {:error, reason} ->
         ExGram.send_message(
           chat_id,
-          "Couldn't parse that search: #{reason}\nTry `/free wed 18,19 thu 18,19`.",
-          parse_mode: "Markdown"
+          "⚠️ Couldn't parse that search: #{reason}\nTry `/free wed 18,19 thu 18,19`.",
+          parse_mode: "Markdown",
+          reply_markup: free_query_nav()
         )
     end
 
@@ -438,6 +442,19 @@ defmodule Lacuna.Telegram.Free do
 
   defp flatten(by_court),
     do: by_court |> Map.values() |> Enum.flat_map(fn {_, s} -> s end)
+
+  defp query_keyboard(slots) do
+    rows = Views.book_keyboard(slots).inline_keyboard
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ free_query_nav_rows()}
+  end
+
+  defp free_query_nav do
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: free_query_nav_rows()}
+  end
+
+  defp free_query_nav_rows do
+    [[%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]]
+  end
 
   defp free_callback(session_id, action), do: "free:v1:#{session_id}:#{action}"
 

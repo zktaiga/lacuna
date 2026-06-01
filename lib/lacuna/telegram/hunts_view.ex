@@ -91,7 +91,8 @@ defmodule Lacuna.Telegram.HuntsView do
                 callback_data: "hunt:pace"
               }
             ],
-            [%ExGram.Model.InlineKeyboardButton{text: "➕ New hunt", callback_data: "hunt:new"}]
+            [%ExGram.Model.InlineKeyboardButton{text: "➕ New hunt", callback_data: "hunt:new"}],
+            [%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]
           ]
     }
   end
@@ -141,7 +142,10 @@ defmodule Lacuna.Telegram.HuntsView do
             callback_data: "hunt:delete:#{hunt.id}"
           }
         ],
-        [%ExGram.Model.InlineKeyboardButton{text: "← Back", callback_data: "hunt:list"}]
+        [
+          %ExGram.Model.InlineKeyboardButton{text: "← Hunts", callback_data: "hunt:list"},
+          %ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}
+        ]
       ]
     }
   end
@@ -239,7 +243,7 @@ defmodule Lacuna.Telegram.HuntsView do
           }
         ],
         [%ExGram.Model.InlineKeyboardButton{text: fast, callback_data: "hunt:pace:set:fast"}],
-        [%ExGram.Model.InlineKeyboardButton{text: "Back", callback_data: "hunt:list"}]
+        [%ExGram.Model.InlineKeyboardButton{text: "← Hunts", callback_data: "hunt:list"}]
       ]
     }
   end

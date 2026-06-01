@@ -5,15 +5,24 @@ defmodule Lacuna.Telegram.Commands.Help do
     text = """
     *Lacuna*
 
-    /menu — open navigation.
-    /free — what's available now? Pick a day → time → court.
-    /free wed 18,19 thu 18,19 — quick search specific days/times.
-    /hunts — manage standing slot hunts.
-    /bookings — see and cancel your bookings.
-    /help — this list.
+    🔎 /free — browse open slots.
+    ⚡ /free wed 18,19 thu 18,19 — quick day/time search.
+    🎯 /hunts — manage standing slot hunts.
+    📋 /bookings — see and cancel bookings.
+    🧭 /menu — open navigation.
     """
 
-    ExGram.send_message(ctx.update.message.chat.id, text, parse_mode: "Markdown")
+    markup = %ExGram.Model.InlineKeyboardMarkup{
+      inline_keyboard: [
+        [%ExGram.Model.InlineKeyboardButton{text: "🧭 Open menu", callback_data: "menu:root"}]
+      ]
+    }
+
+    ExGram.send_message(ctx.update.message.chat.id, text,
+      parse_mode: "Markdown",
+      reply_markup: markup
+    )
+
     ctx
   end
 end
