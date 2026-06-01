@@ -28,7 +28,7 @@ defmodule Lacuna.Hunts.Hunt do
 
     %__MODULE__{
       id: id,
-      name: Map.get(attrs, :name) || "Hunt #{String.slice(id, -4, 4)}",
+      name: Map.get(attrs, :name),
       active?: Map.get(attrs, :active?, true),
       weekdays: Map.get(attrs, :weekdays, []),
       times: Map.get(attrs, :times, []),
