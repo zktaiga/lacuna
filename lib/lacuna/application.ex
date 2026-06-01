@@ -18,6 +18,7 @@ defmodule Lacuna.Application do
       Lacuna.Bus,
       {Lacuna.Watch.Config, []},
       {Lacuna.Backend.Cache, []},
+      {Lacuna.Telegram.FreeSessions, []},
       {Lacuna.Backend.Session, []},
       {Lacuna.Watcher.Poller, []},
       {Lacuna.Plugins.TelegramNotifier, []},

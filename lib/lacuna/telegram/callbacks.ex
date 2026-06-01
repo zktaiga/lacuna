@@ -12,8 +12,14 @@ defmodule Lacuna.Telegram.Callbacks do
 
   alias Lacuna.{Clock, Slot, Watch.Config}
   alias Lacuna.Backend.{API, Availability, Session}
-  alias Lacuna.Telegram.{BookingsView, Free, Menu, Views, WatchView}
+  alias Lacuna.Telegram.{BookingsView, Free, FreeSessions, Menu, Views, WatchView}
   require Logger
+
+  def handle(%ExGram.Model.CallbackQuery{data: "free:" <> _ = data} = cq, ctx) do
+    ack_free(data, cq)
+    dispatch_free(data, cq)
+    ctx
+  end
 
   def handle(%ExGram.Model.CallbackQuery{} = cq, ctx) do
     cq.data
@@ -24,6 +30,48 @@ defmodule Lacuna.Telegram.Callbacks do
   end
 
   ## Dispatch
+
+  defp dispatch_free("free:v1:" <> rest, cq) do
+    with [session_id, action] <- String.split(rest, ":", parts: 2),
+         true <- FreeSessions.valid?(session_id, cq.message.chat.id, cq.message.message_id) do
+      dispatch_free_action(action, session_id, cq)
+    else
+      _ ->
+        Logger.info("Expired /free callback; replacing stale menu")
+        safe(fn -> Free.replace_expired(cq.message) end)
+    end
+  end
+
+  defp dispatch_free("free:" <> _legacy, cq) do
+    Logger.info("Legacy /free callback; replacing stale menu")
+    safe(fn -> Free.replace_expired(cq.message) end)
+  end
+
+  defp dispatch_free_action("close", _session_id, cq) do
+    safe(fn -> ExGram.delete_message(cq.message.chat.id, cq.message.message_id) end)
+  end
+
+  defp dispatch_free_action("root", session_id, cq),
+    do: safe(fn -> Free.edit_to_root(cq.message, session_id) end)
+
+  defp dispatch_free_action("d:" <> iso_date, session_id, cq) do
+    case Date.from_iso8601(iso_date) do
+      {:ok, date} -> safe(fn -> Free.edit_to_day(cq.message, session_id, date) end)
+      _ -> :ok
+    end
+  end
+
+  defp dispatch_free_action("t:" <> rest, session_id, cq) do
+    with [iso_date, time_url] <- String.split(rest, ":", parts: 2),
+         {:ok, date} <- Date.from_iso8601(iso_date),
+         %Time{} = at <- parse_time_url(time_url) do
+      safe(fn -> Free.edit_to_time(cq.message, session_id, date, at) end)
+    else
+      _ -> :ok
+    end
+  end
+
+  defp dispatch_free_action(_, _session_id, _cq), do: :ok
 
   defp dispatch("menu:root", cq), do: safe(fn -> Menu.edit_menu(cq.message) end)
   defp dispatch("menu:free", cq), do: safe(fn -> Free.edit_to_root(cq.message) end)
@@ -270,6 +318,14 @@ defmodule Lacuna.Telegram.Callbacks do
   defp trunc_inspect(t), do: t |> inspect() |> String.slice(0, 200)
 
   ## Telegram callback ack — always answer, never leave the spinner
+
+  defp ack_free("free:v1:" <> rest, cq) do
+    text = if String.ends_with?(rest, ":close"), do: "Closed", else: "Refreshing…"
+    ExGram.answer_callback_query(cq.id, text: text)
+  end
+
+  defp ack_free("free:" <> _legacy, cq),
+    do: ExGram.answer_callback_query(cq.id, text: "This menu expired; opening a fresh one.")
 
   defp finalize({:ack, text}, cq), do: ExGram.answer_callback_query(cq.id, text: text)
 

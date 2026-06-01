@@ -56,5 +56,6 @@ config :lacuna,
   session_cache_max_age_minutes: env!("LACUNA_SESSION_CACHE_MAX_AGE_MINUTES", :integer, 43_200),
   log_provider_requests: env!("LACUNA_LOG_PROVIDER_REQUESTS", :boolean, false),
   availability_cache_ttl_seconds: env!("LACUNA_AVAILABILITY_CACHE_TTL_SECONDS", :integer, 180),
+  free_session_ttl_seconds: env!("LACUNA_FREE_SESSION_TTL_SECONDS", :integer, 30 * 60),
   bookings_cache_ttl_seconds: env!("LACUNA_BOOKINGS_CACHE_TTL_SECONDS", :integer, 30),
   watch_windows: watch_windows
