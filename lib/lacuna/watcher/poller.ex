@@ -20,6 +20,7 @@ defmodule Lacuna.Watcher.Poller do
 
   alias Lacuna.{Bus, Config, Slot, Watcher.Differ}
   alias Lacuna.Backend.{API, Availability, Courts, Session}
+  alias Lacuna.Hunts.Settings
   alias Lacuna.Hunts.Store, as: HuntStore
 
   defstruct status: :idle,
@@ -274,14 +275,19 @@ defmodule Lacuna.Watcher.Poller do
   end
 
   defp jittered_delay(prefs) do
-    behaviour = prefs.poll.behaviour
+    case Settings.poll_profile() do
+      :fast ->
+        rand_between(300, 900) * 1_000
 
-    cond do
-      chance?(behaviour.long_pause_probability) ->
-        rand_between(behaviour.long_pause_min_minutes, behaviour.long_pause_max_minutes) * 60_000
+      _ ->
+        behaviour = prefs.poll.behaviour
 
-      true ->
-        rand_between(prefs.poll.interval_min_seconds, prefs.poll.interval_max_seconds) * 1_000
+        if chance?(behaviour.long_pause_probability) do
+          rand_between(behaviour.long_pause_min_minutes, behaviour.long_pause_max_minutes) *
+            60_000
+        else
+          rand_between(prefs.poll.interval_min_seconds, prefs.poll.interval_max_seconds) * 1_000
+        end
     end
   end
 
@@ -315,7 +321,12 @@ defmodule Lacuna.Watcher.Poller do
     end
   end
 
-  defp skip_tick?(prefs), do: chance?(prefs.poll.behaviour.skip_probability)
+  defp skip_tick?(prefs) do
+    case Settings.poll_profile() do
+      :fast -> false
+      _ -> chance?(prefs.poll.behaviour.skip_probability)
+    end
+  end
 
   defp chance?(probability) when probability <= 0, do: false
   defp chance?(probability) when probability >= 1, do: true

@@ -20,6 +20,7 @@ defmodule Lacuna.Application do
       {Lacuna.Backend.Cache, []},
       {Lacuna.Telegram.FreeSessions, []},
       {Lacuna.Hunts.Store, []},
+      {Lacuna.Hunts.Settings, []},
       {Lacuna.Backend.Session, []},
       {Lacuna.Watcher.Poller, []},
       {Lacuna.Plugins.TelegramNotifier, []},

@@ -1,7 +1,7 @@
 defmodule Lacuna.Telegram.HuntsView do
   @moduledoc "Telegram UI for multiple standing hunts."
 
-  alias Lacuna.Hunts.{Hunt, Store}
+  alias Lacuna.Hunts.{Hunt, Settings, Store}
   alias Lacuna.Telegram.Views
 
   @weekday_keys Hunt.weekday_keys()
@@ -33,7 +33,7 @@ defmodule Lacuna.Telegram.HuntsView do
         edit_detail(message, hunt.id)
 
       {:error, :max_active_hunts} ->
-        edit(message, "You already have the maximum active hunts.", list_markup())
+        edit(message, "⚠️ You already have the maximum number of active hunts.", list_markup())
     end
   end
 
@@ -41,6 +41,10 @@ defmodule Lacuna.Telegram.HuntsView do
   def edit_times(message, id), do: edit_picker(message, id, :times)
   def edit_mode(message, id), do: edit_picker(message, id, :mode)
   def edit_after(message, id), do: edit_picker(message, id, :after)
+
+  def edit_pace(message) do
+    edit(message, "🎛 *Polling pace*\n\n#{pace_help_text()}", pace_markup())
+  end
 
   defp edit_picker(message, id, picker) do
     case Store.get(id) do
@@ -54,7 +58,7 @@ defmodule Lacuna.Telegram.HuntsView do
 
     body =
       if hunts == [] do
-        "No hunts yet. Create one to start watching configured days and times."
+        "No hunts yet. Tap ➕ *New hunt* to watch for matching slots."
       else
         hunts
         |> Enum.map_join("\n\n", fn hunt ->
@@ -62,7 +66,7 @@ defmodule Lacuna.Telegram.HuntsView do
         end)
       end
 
-    "🎯 *Hunts*\n\n#{body}"
+    "🎯 *Hunts*\n\n#{body}\n\n#{pace_text()}"
   end
 
   defp list_markup do
@@ -80,7 +84,15 @@ defmodule Lacuna.Telegram.HuntsView do
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard:
         hunt_rows ++
-          [[%ExGram.Model.InlineKeyboardButton{text: "➕ New hunt", callback_data: "hunt:new"}]]
+          [
+            [
+              %ExGram.Model.InlineKeyboardButton{
+                text: "#{pace_button_text()}",
+                callback_data: "hunt:pace"
+              }
+            ],
+            [%ExGram.Model.InlineKeyboardButton{text: "➕ New hunt", callback_data: "hunt:new"}]
+          ]
     }
   end
 
@@ -97,35 +109,39 @@ defmodule Lacuna.Telegram.HuntsView do
   end
 
   defp detail_markup(hunt) do
-    toggle = if hunt.active?, do: "Pause", else: "Resume"
-
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
         [
-          %ExGram.Model.InlineKeyboardButton{text: "Days", callback_data: "hunt:days:#{hunt.id}"},
           %ExGram.Model.InlineKeyboardButton{
-            text: "Times",
+            text: "📅 Days",
+            callback_data: "hunt:days:#{hunt.id}"
+          },
+          %ExGram.Model.InlineKeyboardButton{
+            text: "🕒 Times",
             callback_data: "hunt:times:#{hunt.id}"
           }
         ],
         [
-          %ExGram.Model.InlineKeyboardButton{text: "Mode", callback_data: "hunt:mode:#{hunt.id}"},
           %ExGram.Model.InlineKeyboardButton{
-            text: "After match",
+            text: "🔔 Mode",
+            callback_data: "hunt:mode:#{hunt.id}"
+          },
+          %ExGram.Model.InlineKeyboardButton{
+            text: "🎬 After match",
             callback_data: "hunt:after:#{hunt.id}"
           }
         ],
         [
           %ExGram.Model.InlineKeyboardButton{
-            text: toggle,
+            text: if(hunt.active?, do: "⏸ Pause", else: "▶️ Resume"),
             callback_data: "hunt:toggle:#{hunt.id}"
           },
           %ExGram.Model.InlineKeyboardButton{
-            text: "Delete",
+            text: "🗑 Delete",
             callback_data: "hunt:delete:#{hunt.id}"
           }
         ],
-        [%ExGram.Model.InlineKeyboardButton{text: "Back", callback_data: "hunt:list"}]
+        [%ExGram.Model.InlineKeyboardButton{text: "← Back", callback_data: "hunt:list"}]
       ]
     }
   end
@@ -164,8 +180,8 @@ defmodule Lacuna.Telegram.HuntsView do
   end
 
   defp picker_markup(hunt, :mode) do
-    alert = if hunt.mode == :alert_only, do: "✅ Alert only", else: "Alert only"
-    auto = if hunt.mode == :auto_book, do: "✅ Auto-book", else: "Auto-book"
+    alert = if hunt.mode == :alert_only, do: "✅ 🔔 Alert only", else: "🔔 Alert only"
+    auto = if hunt.mode == :auto_book, do: "✅ ⚡ Auto-book", else: "⚡ Auto-book"
 
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
@@ -187,8 +203,8 @@ defmodule Lacuna.Telegram.HuntsView do
   end
 
   defp picker_markup(hunt, :after) do
-    stop = if hunt.after_match == :stop_on_first, do: "✅ Stop on first", else: "Stop on first"
-    cont = if hunt.after_match == :continue, do: "✅ Continue", else: "Continue"
+    stop = if hunt.after_match == :stop_on_first, do: "✅ 🛑 Stop on first", else: "🛑 Stop on first"
+    cont = if hunt.after_match == :continue, do: "✅ 🔁 Continue", else: "🔁 Continue"
 
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
@@ -209,8 +225,27 @@ defmodule Lacuna.Telegram.HuntsView do
     }
   end
 
+  defp pace_markup do
+    profile = Settings.poll_profile()
+    human = if profile == :human_like, do: "✅ 🧍 Human-like", else: "🧍 Human-like"
+    fast = if profile == :fast, do: "✅ ⚡ Fast", else: "⚡ Fast"
+
+    %ExGram.Model.InlineKeyboardMarkup{
+      inline_keyboard: [
+        [
+          %ExGram.Model.InlineKeyboardButton{
+            text: human,
+            callback_data: "hunt:pace:set:human_like"
+          }
+        ],
+        [%ExGram.Model.InlineKeyboardButton{text: fast, callback_data: "hunt:pace:set:fast"}],
+        [%ExGram.Model.InlineKeyboardButton{text: "Back", callback_data: "hunt:list"}]
+      ]
+    }
+  end
+
   defp back_button(hunt),
-    do: %ExGram.Model.InlineKeyboardButton{text: "Back", callback_data: "hunt:show:#{hunt.id}"}
+    do: %ExGram.Model.InlineKeyboardButton{text: "← Back", callback_data: "hunt:show:#{hunt.id}"}
 
   defp edit(message, text, markup) do
     ExGram.edit_message_text(text,
@@ -222,17 +257,28 @@ defmodule Lacuna.Telegram.HuntsView do
   end
 
   defp summary(hunt) do
-    days = if hunt.weekdays == [], do: "Any day", else: Enum.join(hunt.weekdays, ", ")
+    days = if hunt.weekdays == [], do: "📅 Any day", else: "📅 #{Enum.join(hunt.weekdays, ", ")}"
 
     times =
       if hunt.times == [],
-        do: "Any time",
-        else: hunt.times |> Enum.map(&Views.format_time/1) |> Enum.join(", ")
+        do: "🕒 Any time",
+        else: "🕒 #{hunt.times |> Enum.map(&Views.format_time/1) |> Enum.join(", ")}"
 
-    mode = if hunt.mode == :auto_book, do: "Auto-book", else: "Alert only"
-    after_label = if hunt.after_match == :stop_on_first, do: "Stop on first", else: "Continue"
-    "#{days} · #{times} · #{mode} · #{after_label}"
+    mode = if hunt.mode == :auto_book, do: "⚡ Auto-book", else: "🔔 Alert only"
+    after_label = if hunt.after_match == :stop_on_first, do: "🛑 Stop on first", else: "🔁 Continue"
+    "#{days} · #{times}\n#{mode} · #{after_label}"
   end
+
+  defp pace_text, do: "🎛 Pace: #{pace_label(Settings.poll_profile())}"
+
+  defp pace_button_text, do: "🎛 Pace: #{pace_label(Settings.poll_profile())}"
+
+  defp pace_help_text do
+    "🧍 *Human-like* is the default: 10–30 minute checks, occasional skips/long pauses, request delays, and full sleep overnight.\n\n⚡ *Fast* checks more often while still sleeping overnight. Use it only when you really care about a short window."
+  end
+
+  defp pace_label(:fast), do: "⚡ Fast"
+  defp pace_label(_), do: "🧍 Human-like"
 
   defp status(%{active?: true}), do: "🟢"
   defp status(_), do: "⏸"

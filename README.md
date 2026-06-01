@@ -61,6 +61,7 @@ hunt filters:
 - times: exact configured slot starts, from `[hunt].time_options` in `prefs.toml`.
 - mode: alert only, or opt-in auto-book.
 - after match: stop on first match, or continue watching.
+- pace: human-like by default, or fast when you temporarily want tighter checks. both still sleep overnight.
 
 `/free wed 18,19 thu 18,19` runs a one-shot search for specific days/times. bare hours are 24-hour values, so `7,8` means 07:00 and 08:00.
 

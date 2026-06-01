@@ -12,6 +12,7 @@ defmodule Lacuna.Telegram.Callbacks do
 
   alias Lacuna.{Clock, Slot, Watch.Config}
   alias Lacuna.Backend.{API, Availability, Session}
+  alias Lacuna.Hunts.Settings
   alias Lacuna.Hunts.Store, as: HuntStore
   alias Lacuna.Telegram.{BookingsView, Free, FreeSessions, HuntsView, Menu, Views, WatchView}
   require Logger
@@ -81,6 +82,14 @@ defmodule Lacuna.Telegram.Callbacks do
 
   defp dispatch("hunt:list", cq), do: safe(fn -> HuntsView.edit_list(cq.message) end)
   defp dispatch("hunt:new", cq), do: safe(fn -> HuntsView.new_hunt(cq.message) end)
+  defp dispatch("hunt:pace", cq), do: safe(fn -> HuntsView.edit_pace(cq.message) end)
+
+  defp dispatch("hunt:pace:set:" <> profile, cq) do
+    Settings.set_poll_profile(String.to_existing_atom(profile))
+    safe(fn -> HuntsView.edit_list(cq.message) end)
+    {:ack, "Pace updated"}
+  end
+
   defp dispatch("hunt:show:" <> id, cq), do: safe(fn -> HuntsView.edit_detail(cq.message, id) end)
   defp dispatch("hunt:days:" <> id, cq), do: safe(fn -> HuntsView.edit_days(cq.message, id) end)
   defp dispatch("hunt:times:" <> id, cq), do: safe(fn -> HuntsView.edit_times(cq.message, id) end)
