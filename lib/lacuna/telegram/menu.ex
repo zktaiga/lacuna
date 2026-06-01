@@ -28,7 +28,7 @@ defmodule Lacuna.Telegram.Menu do
       inline_keyboard: [
         [
           %ExGram.Model.InlineKeyboardButton{text: "🔎 Find slots", callback_data: "menu:free"},
-          %ExGram.Model.InlineKeyboardButton{text: "👀 Watch", callback_data: "menu:watch"}
+          %ExGram.Model.InlineKeyboardButton{text: "🎯 Hunts", callback_data: "menu:hunts"}
         ],
         [
           %ExGram.Model.InlineKeyboardButton{text: "📋 Bookings", callback_data: "menu:bookings"}

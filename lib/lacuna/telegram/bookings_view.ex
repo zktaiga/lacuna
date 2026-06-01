@@ -15,6 +15,7 @@ defmodule Lacuna.Telegram.BookingsView do
   """
 
   alias Lacuna.Backend.{API, Cache, Session}
+  alias Lacuna.Hunts.Store, as: HuntStore
   require Logger
 
   ## Send
@@ -115,6 +116,8 @@ defmodule Lacuna.Telegram.BookingsView do
 
     case API.cancel_booking(session, booking_id) do
       {:ok, _} ->
+        HuntStore.clear_active_booking_blocks()
+
         ExGram.edit_message_text("✅ Cancelled.",
           chat_id: message.chat.id,
           message_id: message.message_id,

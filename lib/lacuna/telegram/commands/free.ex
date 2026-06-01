@@ -3,8 +3,22 @@ defmodule Lacuna.Telegram.Commands.Free do
 
   alias Lacuna.Telegram.Free
 
-  def run(_msg, ctx) do
-    Free.send_root(ctx.update.message.chat.id)
+  def run(msg, ctx) do
+    chat_id = ctx.update.message.chat.id
+
+    case args(msg) do
+      "" -> Free.send_root(chat_id)
+      query -> Free.send_query(chat_id, query)
+    end
+
     ctx
   end
+
+  defp args(%{text: text}) when is_binary(text) do
+    text
+    |> String.replace(~r{^/free(@\w+)?\s*}, "")
+    |> String.trim()
+  end
+
+  defp args(_), do: ""
 end

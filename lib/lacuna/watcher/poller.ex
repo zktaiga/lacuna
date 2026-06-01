@@ -7,10 +7,8 @@ defmodule Lacuna.Watcher.Poller do
   via `Lacuna.Bus`.
 
   States:
-    * `:idle`   — not polling. `/start` flips to `:running`.
-    * `:running` — ticking on schedule.
-    * `:paused`  — like idle but remembers we were running. `/resume`
-                   resumes immediately.
+    * `:idle`   — no active hunts.
+    * `:running` — ticking on schedule while at least one hunt is active.
 
   The poller is resilient: a thrown exception in the fetch path is
   caught, logged, published as `:poll_failed`, and the next tick is
@@ -20,8 +18,9 @@ defmodule Lacuna.Watcher.Poller do
   use GenServer
   require Logger
 
-  alias Lacuna.{Bus, Config, Watcher.State, Watcher.Differ, Watch}
+  alias Lacuna.{Bus, Config, Slot, Watcher.Differ}
   alias Lacuna.Backend.{API, Availability, Courts, Session}
+  alias Lacuna.Hunts.Store, as: HuntStore
 
   defstruct status: :idle,
             timer: nil,
@@ -45,8 +44,8 @@ defmodule Lacuna.Watcher.Poller do
 
   @impl true
   def init(_opts) do
-    # Schedule a deferred check; real ticking only starts when /watch enables.
-    send(self(), :watch_changed)
+    # Schedule a deferred check; real ticking only starts when hunts exist.
+    send(self(), :hunts_changed)
     {:ok, %__MODULE__{}}
   end
 
@@ -68,29 +67,38 @@ defmodule Lacuna.Watcher.Poller do
 
   @impl true
   def handle_info(:tick, s) do
-    if Watch.Config.active?() do
-      case run_tick(s) do
-        {:ok, new_state} ->
-          {:noreply, schedule_tick(%{new_state | status: :running}, nil)}
+    cond do
+      not HuntStore.active?() ->
+        cancel(s.timer)
+        {:noreply, %{s | status: :idle, timer: nil, snapshot: %{}, bootstrapped?: false}}
 
-        {:error, reason, new_state} ->
-          Bus.publish({:poll_failed, reason})
-          {:noreply, schedule_tick(%{new_state | status: :running}, backoff_ms())}
-      end
-    else
-      cancel(s.timer)
-      {:noreply, %{s | status: :idle, timer: nil, snapshot: %{}, bootstrapped?: false}}
+      sleeping?(Config.load!()) ->
+        {:noreply, schedule_tick(%{s | status: :running}, sleep_until_wake_ms(Config.load!()))}
+
+      skip_tick?(Config.load!()) ->
+        Logger.info("Skipping hunt poll tick by scheduler policy")
+        {:noreply, schedule_tick(%{s | status: :running, last_tick_at: DateTime.utc_now()}, nil)}
+
+      true ->
+        case run_tick(s) do
+          {:ok, new_state} ->
+            {:noreply, schedule_tick(%{new_state | status: :running}, nil)}
+
+          {:error, reason, new_state} ->
+            Bus.publish({:poll_failed, reason})
+            {:noreply, schedule_tick(%{new_state | status: :running}, backoff_ms())}
+        end
     end
   end
 
-  def handle_info(:watch_changed, s) do
+  def handle_info(:hunts_changed, s) do
     cond do
-      Watch.Config.active?() and s.status != :running ->
-        Logger.info("Watch enabled — scheduling immediate poll tick")
+      HuntStore.active?() and s.status != :running ->
+        Logger.info("Hunts active — scheduling immediate poll tick")
         {:noreply, schedule_tick(%{s | status: :running}, 0)}
 
-      not Watch.Config.active?() and s.status == :running ->
-        Logger.info("Watch disabled — pausing poller")
+      not HuntStore.active?() and s.status == :running ->
+        Logger.info("No active hunts — pausing poller")
         cancel(s.timer)
         {:noreply, %{s | status: :idle, timer: nil, snapshot: %{}, bootstrapped?: false}}
 
@@ -105,17 +113,18 @@ defmodule Lacuna.Watcher.Poller do
 
   defp run_tick(%{snapshot: prev, bootstrapped?: bootstrapped} = s) do
     prefs = Config.load!()
+    hunts = HuntStore.active()
 
     with {:ok, courts} <- ensure_courts(),
-         {:ok, slots} <- fetch_all_slots(courts, prefs) do
-      now = slots |> Enum.filter(&Watch.Config.matches?/1) |> State.from_slots()
+         {:ok, slots} <- fetch_all_slots(courts, prefs, hunts) do
+      now = snapshot_for(hunts, slots)
 
       cond do
         not bootstrapped ->
           # First successful tick: capture baseline silently. We never
           # want to alert on slots that were already open before the
           # bot started watching.
-          Logger.info("Watcher bootstrap: #{map_size(now)} open slots recorded as baseline")
+          Logger.info("Hunt bootstrap: #{map_size(now)} matching open slots recorded as baseline")
 
           {:ok,
            %{
@@ -184,15 +193,17 @@ defmodule Lacuna.Watcher.Poller do
   end
 
   @doc false
-  def planned_dates(%Date{} = today, lookahead_days) do
+  def planned_dates(%Date{} = today, lookahead_days, hunts \\ []) do
+    selected_weekdays = hunts |> Enum.flat_map(& &1.weekdays) |> Enum.uniq()
+
     for d <- 0..(lookahead_days - 1),
         date = Date.add(today, d),
-        Watch.Config.date_matches_weekday?(date),
+        selected_weekdays == [] or day_short(Date.day_of_week(date)) in selected_weekdays,
         do: date
   end
 
-  defp fetch_all_slots(courts, prefs) do
-    days = planned_dates(Lacuna.Clock.local_today(), prefs.poll.lookahead_days)
+  defp fetch_all_slots(courts, prefs, hunts) do
+    days = planned_dates(Lacuna.Clock.local_today(), prefs.poll.lookahead_days, hunts)
 
     pairs = for c <- courts, d <- days, do: {c, d}
 
@@ -229,10 +240,23 @@ defmodule Lacuna.Watcher.Poller do
   defp jittered_request_delay(min, max) when max <= min, do: max(min, 0)
   defp jittered_request_delay(min, max), do: min + :rand.uniform(max - min + 1) - 1
 
-  defp publish_events(opened, closed, _prefs) do
-    Enum.each(opened, fn slot -> Bus.publish({:slot_opened, slot}) end)
+  defp snapshot_for(hunts, slots) do
+    for slot <- slots,
+        hunt <- hunts,
+        Lacuna.Hunts.Hunt.matches?(hunt, slot),
+        into: %{} do
+      {"#{hunt.id}|#{Slot.key(slot)}", %{hunt: hunt, slot: slot}}
+    end
+  end
 
-    Enum.each(closed, fn slot -> Bus.publish({:slot_closed, slot}) end)
+  defp publish_events(opened, closed, _prefs) do
+    Enum.each(opened, fn %{hunt: hunt, slot: slot} ->
+      Bus.publish({:hunt_slot_opened, hunt, slot})
+    end)
+
+    Enum.each(closed, fn %{hunt: hunt, slot: slot} ->
+      Bus.publish({:hunt_slot_closed, hunt, slot})
+    end)
   end
 
   defp muted?(%{quiet_until: nil}), do: false
@@ -250,15 +274,74 @@ defmodule Lacuna.Watcher.Poller do
   end
 
   defp jittered_delay(prefs) do
-    base = prefs.poll.interval_seconds * 1_000
-    jitter = prefs.poll.jitter_seconds * 1_000
-    base + :rand.uniform(jitter * 2 + 1) - jitter - 1
+    behaviour = prefs.poll.behaviour
+
+    cond do
+      chance?(behaviour.long_pause_probability) ->
+        rand_between(behaviour.long_pause_min_minutes, behaviour.long_pause_max_minutes) * 60_000
+
+      true ->
+        rand_between(prefs.poll.interval_min_seconds, prefs.poll.interval_max_seconds) * 1_000
+    end
+  end
+
+  defp sleeping?(prefs) do
+    prefs.poll.sleep.enabled and in_sleep_window?(Lacuna.Clock.local_time(), prefs.poll.sleep)
+  end
+
+  defp sleep_until_wake_ms(prefs) do
+    sleep = prefs.poll.sleep
+    now = Lacuna.Clock.local_time()
+    wake = parse_hhmm!(sleep.end)
+
+    seconds =
+      if Time.compare(now, wake) == :lt do
+        Time.diff(wake, now, :second)
+      else
+        24 * 3600 - Time.diff(now, wake, :second)
+      end
+
+    jitter = rand_between(0, sleep.wake_jitter_minutes * 60)
+    (seconds + jitter) * 1_000
+  end
+
+  defp in_sleep_window?(now, sleep) do
+    start = parse_hhmm!(sleep.start)
+    finish = parse_hhmm!(sleep.end)
+
+    case Time.compare(start, finish) do
+      :lt -> Time.compare(now, start) != :lt and Time.compare(now, finish) == :lt
+      _ -> Time.compare(now, start) != :lt or Time.compare(now, finish) == :lt
+    end
+  end
+
+  defp skip_tick?(prefs), do: chance?(prefs.poll.behaviour.skip_probability)
+
+  defp chance?(probability) when probability <= 0, do: false
+  defp chance?(probability) when probability >= 1, do: true
+  defp chance?(probability), do: :rand.uniform() < probability
+
+  defp rand_between(min, max) when max <= min, do: min
+  defp rand_between(min, max), do: min + :rand.uniform(max - min + 1) - 1
+
+  defp parse_hhmm!(value) do
+    value = if String.length(value) == 5, do: value <> ":00", else: value
+    {:ok, time} = Time.from_iso8601(value)
+    time
   end
 
   defp backoff_ms do
     prefs = Config.load!()
     prefs.poll.backoff_seconds * 1_000
   end
+
+  defp day_short(1), do: "Mon"
+  defp day_short(2), do: "Tue"
+  defp day_short(3), do: "Wed"
+  defp day_short(4), do: "Thu"
+  defp day_short(5), do: "Fri"
+  defp day_short(6), do: "Sat"
+  defp day_short(7), do: "Sun"
 
   defp cancel(nil), do: :ok
   defp cancel(t) when is_reference(t), do: Process.cancel_timer(t)

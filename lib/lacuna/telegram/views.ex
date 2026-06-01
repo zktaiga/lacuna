@@ -4,7 +4,8 @@ defmodule Lacuna.Telegram.Views do
   bus notifier. Nothing here owns state.
   """
 
-  alias Lacuna.{Slot, Telegram.Access, Watch.Config}
+  alias Lacuna.{Slot, Telegram.Access}
+  alias Lacuna.Hunts.Store, as: HuntStore
   require Logger
 
   @doc """
@@ -67,17 +68,28 @@ defmodule Lacuna.Telegram.Views do
   ## Bus event handlers
 
   @doc "Called by `Plugins.TelegramNotifier` for every event. Pure dispatch."
-  def handle_event({:slot_opened, %Slot{} = slot}) do
-    if Config.get().auto_book? do
-      auto_book(slot)
+  def handle_event({:hunt_slot_opened, hunt, %Slot{} = slot}) do
+    if hunt.mode == :auto_book and hunt.blocked_reason != "active_booking_limit" do
+      auto_book(hunt, slot)
     else
-      text = "*New slot*\n" <> render_slot(slot)
+      text = "*New slot* · #{hunt.name}\n" <> render_slot(slot)
 
       ExGram.send_message(Access.configured_chat_id(), text,
         parse_mode: "Markdown",
         reply_markup: book_keyboard([slot])
       )
+
+      if hunt.blocked_reason != "active_booking_limit", do: stop_hunt_if_needed(hunt)
     end
+  end
+
+  def handle_event({:slot_opened, %Slot{} = slot}) do
+    text = "*New slot*\n" <> render_slot(slot)
+
+    ExGram.send_message(Access.configured_chat_id(), text,
+      parse_mode: "Markdown",
+      reply_markup: book_keyboard([slot])
+    )
   end
 
   def handle_event({:poll_failed, reason}) do
@@ -90,22 +102,27 @@ defmodule Lacuna.Telegram.Views do
 
   def handle_event(_other), do: :ok
 
-  defp auto_book(%Slot{} = slot) do
+  defp auto_book(hunt, %Slot{} = slot) do
     prefs = Lacuna.Config.load!()
     booker = prefs.plugins.booker || Lacuna.Plugins.DefaultBooker
 
-    case apply(booker, :book, [slot, %{actor: :watch_auto_book}]) do
+    case apply(booker, :book, [slot, %{actor: :hunt_auto_book, hunt_id: hunt.id}]) do
       {:ok, _booking} ->
         ExGram.send_message(
           Access.configured_chat_id(),
-          "✅ *Auto-booked*\n" <> render_slot(slot),
+          "✅ *Auto-booked* · #{hunt.name}\n" <> render_slot(slot),
           parse_mode: "Markdown"
         )
 
+        HuntStore.clear_block(hunt.id)
+        stop_hunt_if_needed(hunt)
+
       {:error, reason} ->
+        if active_booking_limit?(reason), do: HuntStore.block(hunt.id, :active_booking_limit)
+
         ExGram.send_message(
           Access.configured_chat_id(),
-          "❌ *Auto-book failed*\n#{render_slot(slot)}\n#{format_booking_error(reason)}",
+          "❌ *Auto-book failed* · #{hunt.name}\n#{render_slot(slot)}\n#{format_booking_error(reason)}",
           parse_mode: "Markdown",
           reply_markup: book_keyboard([slot])
         )
@@ -114,11 +131,26 @@ defmodule Lacuna.Telegram.Views do
 
   ## Helpers
 
+  defp stop_hunt_if_needed(%{after_match: :stop_on_first} = hunt),
+    do: HuntStore.deactivate(hunt.id)
+
+  defp stop_hunt_if_needed(_hunt), do: :ok
+
+  defp active_booking_limit?(reason) do
+    inspect(reason) =~ "Residents are permitted to have 1 active bookings"
+  end
+
   defp format_booking_error({:booking_not_confirmed, _response}) do
     "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
   end
 
-  defp format_booking_error(reason), do: "`#{inspect(reason) |> String.slice(0, 200)}`"
+  defp format_booking_error(reason) do
+    if active_booking_limit?(reason) do
+      "This account already has an active booking for this amenity. Use /bookings to cancel it; auto-book hunts will wait instead of repeatedly retrying."
+    else
+      "`#{inspect(reason) |> String.slice(0, 200)}`"
+    end
+  end
 
   defp pad(n) when n < 10, do: "0#{n}"
   defp pad(n), do: "#{n}"

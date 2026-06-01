@@ -12,7 +12,8 @@ defmodule Lacuna.Telegram.Callbacks do
 
   alias Lacuna.{Clock, Slot, Watch.Config}
   alias Lacuna.Backend.{API, Availability, Session}
-  alias Lacuna.Telegram.{BookingsView, Free, FreeSessions, Menu, Views, WatchView}
+  alias Lacuna.Hunts.Store, as: HuntStore
+  alias Lacuna.Telegram.{BookingsView, Free, FreeSessions, HuntsView, Menu, Views, WatchView}
   require Logger
 
   def handle(%ExGram.Model.CallbackQuery{data: "free:" <> _ = data} = cq, ctx) do
@@ -75,8 +76,69 @@ defmodule Lacuna.Telegram.Callbacks do
 
   defp dispatch("menu:root", cq), do: safe(fn -> Menu.edit_menu(cq.message) end)
   defp dispatch("menu:free", cq), do: safe(fn -> Free.edit_to_root(cq.message) end)
-  defp dispatch("menu:watch", cq), do: safe(fn -> WatchView.edit_view(cq.message) end)
+  defp dispatch("menu:hunts", cq), do: safe(fn -> HuntsView.edit_list(cq.message) end)
   defp dispatch("menu:bookings", cq), do: safe(fn -> BookingsView.edit_to_list(cq.message) end)
+
+  defp dispatch("hunt:list", cq), do: safe(fn -> HuntsView.edit_list(cq.message) end)
+  defp dispatch("hunt:new", cq), do: safe(fn -> HuntsView.new_hunt(cq.message) end)
+  defp dispatch("hunt:show:" <> id, cq), do: safe(fn -> HuntsView.edit_detail(cq.message, id) end)
+  defp dispatch("hunt:days:" <> id, cq), do: safe(fn -> HuntsView.edit_days(cq.message, id) end)
+  defp dispatch("hunt:times:" <> id, cq), do: safe(fn -> HuntsView.edit_times(cq.message, id) end)
+  defp dispatch("hunt:mode:" <> id, cq), do: safe(fn -> HuntsView.edit_mode(cq.message, id) end)
+  defp dispatch("hunt:after:" <> id, cq), do: safe(fn -> HuntsView.edit_after(cq.message, id) end)
+
+  defp dispatch("hunt:toggle:" <> id, cq) do
+    HuntStore.toggle_active(id)
+    safe(fn -> HuntsView.edit_detail(cq.message, id) end)
+    {:ack, "Updated"}
+  end
+
+  defp dispatch("hunt:delete:" <> id, cq) do
+    HuntStore.delete(id)
+    safe(fn -> HuntsView.edit_list(cq.message) end)
+    {:ack, "Deleted"}
+  end
+
+  defp dispatch("hunt:day:" <> rest, cq) do
+    with [id, day] <- String.split(rest, ":", parts: 2) do
+      HuntStore.toggle_day(id, day)
+      safe(fn -> HuntsView.edit_days(cq.message, id) end)
+      {:ack, "Updated"}
+    else
+      _ -> :ok
+    end
+  end
+
+  defp dispatch("hunt:time:" <> rest, cq) do
+    with [id, time_text] <- String.split(rest, ":", parts: 2),
+         %Time{} = time <- parse_time_url(String.replace(time_text, ":", "-")) do
+      HuntStore.toggle_time(id, time)
+      safe(fn -> HuntsView.edit_times(cq.message, id) end)
+      {:ack, "Updated"}
+    else
+      _ -> :ok
+    end
+  end
+
+  defp dispatch("hunt:mode:set:" <> rest, cq) do
+    with [id, mode] <- String.split(rest, ":", parts: 2) do
+      HuntStore.set_mode(id, String.to_existing_atom(mode))
+      safe(fn -> HuntsView.edit_mode(cq.message, id) end)
+      {:ack, "Updated"}
+    else
+      _ -> :ok
+    end
+  end
+
+  defp dispatch("hunt:after:set:" <> rest, cq) do
+    with [id, after_match] <- String.split(rest, ":", parts: 2) do
+      HuntStore.set_after_match(id, String.to_existing_atom(after_match))
+      safe(fn -> HuntsView.edit_after(cq.message, id) end)
+      {:ack, "Updated"}
+    else
+      _ -> :ok
+    end
+  end
 
   defp dispatch("free:close", cq) do
     safe(fn -> ExGram.delete_message(cq.message.chat.id, cq.message.message_id) end)
@@ -261,7 +323,13 @@ defmodule Lacuna.Telegram.Callbacks do
     "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
   end
 
-  defp format_booking_error(reason), do: "`#{trunc_inspect(reason)}`"
+  defp format_booking_error(reason) do
+    if inspect(reason) =~ "Residents are permitted to have 1 active bookings" do
+      "This account already has an active booking for this amenity. Use /bookings to cancel it, then try again."
+    else
+      "`#{trunc_inspect(reason)}`"
+    end
+  end
 
   ## Helpers
 

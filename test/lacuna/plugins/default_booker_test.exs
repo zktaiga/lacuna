@@ -87,6 +87,60 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
     assert {:ok, %{booking: %{"booking_id" => "booking-1"}}} = DefaultBooker.book(slot, %{})
   end
 
+  test "book confirms by response booking id when booking shape drifts", %{
+    bypass: bypass,
+    slot: slot
+  } do
+    Bypass.expect(
+      bypass,
+      &route(&1,
+        booking_response: envelope(%{"booking_id" => 34624}),
+        bookings_response:
+          bookings([
+            %{
+              "type" => "upcoming_bookings",
+              "status" => "Booked",
+              "booking_id" => "34624",
+              "facility_id" => "different-court",
+              "facility_name" => "Different Court",
+              "start_date" => "unexpected-date-format",
+              "start_time" => "19:00",
+              "end_time" => "20:00"
+            }
+          ])
+      )
+    )
+
+    assert {:ok, %{booking: %{"booking_id" => "34624"}}} = DefaultBooker.book(slot, %{})
+  end
+
+  test "book matches provider day-month-name booking dates without response id", %{
+    bypass: bypass,
+    slot: slot
+  } do
+    Bypass.expect(
+      bypass,
+      &route(&1,
+        booking_response: envelope(%{}),
+        bookings_response:
+          bookings([
+            %{
+              "type" => "upcoming_bookings",
+              "status" => "Booked",
+              "booking_id" => "booking-1",
+              "facility_id" => "court-a",
+              "facility_name" => "Court A",
+              "start_date" => "24-May-2026",
+              "start_time" => "19:00",
+              "end_time" => "20:00"
+            }
+          ])
+      )
+    )
+
+    assert {:ok, %{booking: %{"booking_id" => "booking-1"}}} = DefaultBooker.book(slot, %{})
+  end
+
   defp route(conn, opts) do
     case {conn.method, conn.request_path} do
       {"POST", "/auth/m_login/"} ->

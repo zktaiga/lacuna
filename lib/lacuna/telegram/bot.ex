@@ -6,7 +6,7 @@ defmodule Lacuna.Telegram.Bot do
 
       /menu      — main navigation
       /free      — what's available, multi-day picker
-      /watch     — manage the standing watch (alerts when slots open)
+      /hunts     — manage standing hunts (alerts when slots open)
       /bookings  — list & cancel upcoming bookings
       /help      — command list
 
@@ -27,7 +27,8 @@ defmodule Lacuna.Telegram.Bot do
   command("help")
   command("menu")
   command("free")
-  command("watch")
+  command("hunt")
+  command("hunts")
   command("bookings")
 
   def bot, do: @bot
@@ -56,7 +57,8 @@ defmodule Lacuna.Telegram.Bot do
   defp dispatch_command(:help, msg, ctx), do: Commands.Help.run(msg, ctx)
   defp dispatch_command(:menu, msg, ctx), do: Commands.Menu.run(msg, ctx)
   defp dispatch_command(:free, msg, ctx), do: Commands.Free.run(msg, ctx)
-  defp dispatch_command(:watch, msg, ctx), do: Commands.Watch.run(msg, ctx)
+  defp dispatch_command(:hunt, msg, ctx), do: Commands.Hunts.run(msg, ctx)
+  defp dispatch_command(:hunts, msg, ctx), do: Commands.Hunts.run(msg, ctx)
   defp dispatch_command(:bookings, msg, ctx), do: Commands.Bookings.run(msg, ctx)
   defp dispatch_command(_, _msg, ctx), do: ctx
 end

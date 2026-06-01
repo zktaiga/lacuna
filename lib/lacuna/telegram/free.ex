@@ -22,6 +22,22 @@ defmodule Lacuna.Telegram.Free do
   alias Lacuna.Telegram.FreeSessions
 
   @lookahead_days 14
+  @weekday_names %{
+    "mon" => 1,
+    "monday" => 1,
+    "tue" => 2,
+    "tuesday" => 2,
+    "wed" => 3,
+    "wednesday" => 3,
+    "thu" => 4,
+    "thursday" => 4,
+    "fri" => 5,
+    "friday" => 5,
+    "sat" => 6,
+    "saturday" => 6,
+    "sun" => 7,
+    "sunday" => 7
+  }
 
   ## Commands
 
@@ -34,6 +50,52 @@ defmodule Lacuna.Telegram.Free do
     case ExGram.send_message(chat_id, text, parse_mode: "Markdown", reply_markup: markup) do
       {:ok, %{message_id: message_id}} -> FreeSessions.attach_message(session_id, message_id)
       other -> Logger.warning("/free send failed: #{inspect(other)}")
+    end
+
+    :ok
+  end
+
+  def send_query(chat_id, query) do
+    case parse_query(query) do
+      {:ok, clauses} ->
+        slots =
+          clauses
+          |> Enum.flat_map(fn {date, times} ->
+            case fetch_open(date) do
+              {:ok, by_court} ->
+                flatten(by_court)
+                |> Enum.filter(fn slot ->
+                  Enum.any?(times, &(Time.compare(slot.start_time, &1) == :eq))
+                end)
+
+              {:error, reason} ->
+                Logger.warning(
+                  "/free query fetch failed for #{Date.to_iso8601(date)}: #{inspect(reason)}"
+                )
+
+                []
+            end
+          end)
+          |> Enum.uniq_by(&Slot.key/1)
+          |> Enum.sort_by(fn s -> {s.date, s.start_time, s.facility_name} end)
+
+        text = query_text(query, slots)
+
+        if slots == [] do
+          ExGram.send_message(chat_id, text, parse_mode: "Markdown")
+        else
+          ExGram.send_message(chat_id, text,
+            parse_mode: "Markdown",
+            reply_markup: Views.book_keyboard(slots)
+          )
+        end
+
+      {:error, reason} ->
+        ExGram.send_message(
+          chat_id,
+          "Couldn't parse that search: #{reason}\nTry `/free wed 18,19 thu 18,19`.",
+          parse_mode: "Markdown"
+        )
     end
 
     :ok
@@ -90,6 +152,91 @@ defmodule Lacuna.Telegram.Free do
   end
 
   ## Data
+
+  defp parse_query(query) do
+    tokens = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
+
+    tokens
+    |> Enum.reduce_while({:ok, nil, []}, fn token, {:ok, current_day, acc} ->
+      cond do
+        Map.has_key?(@weekday_names, token) ->
+          {:cont, {:ok, token, acc}}
+
+        current_day && time_list?(token) ->
+          {:cont, {:ok, current_day, acc ++ [{current_day, parse_time_list(token)}]}}
+
+        true ->
+          {:halt, {:error, "expected weekday followed by times"}}
+      end
+    end)
+    |> case do
+      {:ok, _current, []} ->
+        {:error, "no day/time pairs found"}
+
+      {:ok, _current, pairs} ->
+        clauses =
+          pairs
+          |> Enum.map(fn {day, times} -> {next_date_for(day), times} end)
+          |> Enum.group_by(fn {date, _times} -> date end, fn {_date, times} -> times end)
+          |> Enum.map(fn {date, time_lists} ->
+            {date, time_lists |> List.flatten() |> Enum.uniq()}
+          end)
+
+        {:ok, clauses}
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp time_list?(token),
+    do: String.match?(token, ~r/^\d{1,2}(:\d{2})?(am|pm)?(,\d{1,2}(:\d{2})?(am|pm)?)*$/)
+
+  defp parse_time_list(token), do: token |> String.split(",") |> Enum.map(&parse_query_time!/1)
+
+  defp parse_query_time!(value) do
+    value = String.trim(value)
+
+    {raw, suffix} =
+      if String.ends_with?(value, "am") or String.ends_with?(value, "pm"),
+        do: {String.slice(value, 0..-3//1), String.slice(value, -2, 2)},
+        else: {value, nil}
+
+    [hour | rest] = String.split(raw, ":")
+
+    minute =
+      rest
+      |> List.first()
+      |> case do
+        nil -> 0
+        m -> String.to_integer(m)
+      end
+
+    hour = String.to_integer(hour)
+
+    hour =
+      case suffix do
+        "pm" when hour < 12 -> hour + 12
+        "am" when hour == 12 -> 0
+        _ -> hour
+      end
+
+    Time.new!(hour, minute, 0)
+  end
+
+  defp next_date_for(day) do
+    target = Map.fetch!(@weekday_names, day)
+    today = Clock.local_today()
+    delta = rem(target - Date.day_of_week(today) + 7, 7)
+    Date.add(today, delta)
+  end
+
+  defp query_text(query, []), do: "No slots matched `#{query}`."
+
+  defp query_text(query, slots) do
+    body = slots |> Enum.map_join("\n", &Views.render_slot/1)
+    "*Matches for* `#{query}`\n\n#{body}"
+  end
 
   defp fetch_open(%Date{} = date) do
     key = {:availability_day, date}

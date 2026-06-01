@@ -45,23 +45,24 @@ docker compose up -d --build
 
 - `/menu` — open the main navigation.
 - `/free` — browse available slots: day → time → court → book.
-- `/watch` — configure standing alerts: days, time window, expiry, cutoff, alert-only or auto-book.
+- `/hunts` — configure standing slot hunts: days, exact start times, alert-only or auto-book, stop-on-first or continue.
 - `/bookings` — list upcoming bookings and cancel with a confirmation step.
 - `/help` — command list.
 
 telegram inline buttons are used for actions. `/watch` has a close button so it does not stay sticky in the conversation.
 
-## watch mode
+## hunts
 
-watch mode is idle until enabled from `/watch`. the first successful poll records a silent baseline, so existing open slots do not spam the group. future newly-opened matching slots are announced.
+hunt mode is idle until at least one hunt is active. the first successful poll records a silent baseline, so existing open slots do not spam the group. future newly-opened matching slots are announced.
 
-watch filters:
+hunt filters:
 
-- window: morning, afternoon, evening, or any time. by default: morning 06:00-12:00, afternoon 12:00-18:00, evening 18:00-22:00. set `LACUNA_WATCH_*_HOUR` env vars to override.
 - days: any day or selected weekdays.
-- when: today, tomorrow, weekend, any day, or custom weekdays.
-- stop: at slot start, T-30m, or T-1h. this suppresses slots that are already too close to starting.
+- times: exact configured slot starts, from `[hunt].time_options` in `prefs.toml`.
 - mode: alert only, or opt-in auto-book.
+- after match: stop on first match, or continue watching.
+
+`/free wed 18,19 thu 18,19` runs a one-shot search for specific days/times. bare hours are 24-hour values, so `7,8` means 07:00 and 08:00.
 
 ## session handling
 

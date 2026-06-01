@@ -7,7 +7,8 @@ defmodule Lacuna.Telegram.Commands.Help do
 
     /menu — open navigation.
     /free — what's available now? Pick a day → time → court.
-    /watch — set up an alert for when slots open.
+    /free wed 18,19 thu 18,19 — quick search specific days/times.
+    /hunts — manage standing slot hunts.
     /bookings — see and cancel your bookings.
     /help — this list.
     """

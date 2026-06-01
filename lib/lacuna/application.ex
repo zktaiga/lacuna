@@ -19,6 +19,7 @@ defmodule Lacuna.Application do
       {Lacuna.Watch.Config, []},
       {Lacuna.Backend.Cache, []},
       {Lacuna.Telegram.FreeSessions, []},
+      {Lacuna.Hunts.Store, []},
       {Lacuna.Backend.Session, []},
       {Lacuna.Watcher.Poller, []},
       {Lacuna.Plugins.TelegramNotifier, []},
@@ -55,8 +56,8 @@ defmodule Lacuna.Application do
           description: "What's available — pick a day, time, court"
         },
         %ExGram.Model.BotCommand{
-          command: "watch",
-          description: "Standing alert for new openings"
+          command: "hunts",
+          description: "Manage standing slot hunts"
         },
         %ExGram.Model.BotCommand{command: "bookings", description: "List & cancel your bookings"},
         %ExGram.Model.BotCommand{command: "help", description: "Show command list"}

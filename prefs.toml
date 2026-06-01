@@ -1,12 +1,31 @@
 # Lacuna preferences. Reload on every poll — edit at runtime, no restart.
 
 [poll]
-interval_seconds = 300        # 5 minutes
-jitter_seconds   = 60         # +/- this much, randomised each tick
-lookahead_days   = 7          # poll today, today+1, ..., today+6
-backoff_seconds  = 600        # after a poll fails, wait this much before retry
-request_delay_min_ms = 250    # background delay between availability requests
-request_delay_max_ms = 1250   # keeps poll batches from arriving as a burst
+# Human-like polling: each tick is randomly scheduled in this range.
+interval_min_seconds = 600     # 10 minutes
+interval_max_seconds = 1800    # 30 minutes
+lookahead_days       = 7       # poll today, today+1, ..., today+6
+backoff_seconds      = 1800    # after a poll fails, wait this much before retry
+request_delay_min_ms = 1500    # background delay between availability requests
+request_delay_max_ms = 6000    # keeps poll batches from arriving as a burst
+
+[poll.sleep]
+enabled = true
+start = "23:30"
+end = "09:00"
+wake_jitter_minutes = 30
+
+[poll.behaviour]
+skip_probability = 0.08
+long_pause_probability = 0.05
+long_pause_min_minutes = 60
+long_pause_max_minutes = 150
+
+[hunt]
+time_options = ["06:00", "07:00", "08:00", "09:00", "18:00", "19:00", "20:00", "21:00"]
+default_times = ["19:00", "20:00"]
+max_active_hunts = 5
+default_after_match = "stop_on_first"
 
 [match]
 # Slots have to satisfy ALL these to count as "interesting" enough to alert.

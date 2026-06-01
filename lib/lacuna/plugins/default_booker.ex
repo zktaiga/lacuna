@@ -56,7 +56,9 @@ defmodule Lacuna.Plugins.DefaultBooker do
     do: Map.put(fields, "facility_time_slot_id", to_string(slot_id))
 
   defp confirm_booking(session, %Slot{} = slot, response) do
-    case find_confirmed_booking(session, slot, 3) do
+    booking_id = response_booking_id(response)
+
+    case find_confirmed_booking(session, slot, booking_id, 3) do
       {:ok, booking} ->
         Cache.delete_prefix(:availability_day)
         Cache.delete(:my_bookings)
@@ -67,15 +69,15 @@ defmodule Lacuna.Plugins.DefaultBooker do
     end
   end
 
-  defp find_confirmed_booking(session, slot, attempts_left) do
+  defp find_confirmed_booking(session, slot, booking_id, attempts_left) do
     with {:ok, data} <- API.my_bookings(session) do
       data
       |> upcoming_bookings()
-      |> Enum.find(&matches_slot?(&1, slot))
+      |> Enum.find(&(booking_id_matches?(&1, booking_id) or matches_slot?(&1, slot)))
       |> case do
         nil when attempts_left > 1 ->
           Process.sleep(500)
-          find_confirmed_booking(session, slot, attempts_left - 1)
+          find_confirmed_booking(session, slot, booking_id, attempts_left - 1)
 
         nil ->
           {:error, :booking_not_confirmed}
@@ -97,6 +99,27 @@ defmodule Lacuna.Plugins.DefaultBooker do
   defp upcoming?(booking) do
     Map.get(booking, "type") == "upcoming_bookings" and
       booking_status(booking) not in ["cancelled", "canceled"]
+  end
+
+  defp response_booking_id(%{} = response), do: normalize_id(Map.get(response, "booking_id"))
+  defp response_booking_id(_), do: nil
+
+  defp booking_id_matches?(_booking, nil), do: false
+
+  defp booking_id_matches?(booking, booking_id) do
+    normalize_id(Map.get(booking, "booking_id")) == booking_id
+  end
+
+  defp normalize_id(nil), do: nil
+
+  defp normalize_id(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> nil
+      id -> id
+    end
   end
 
   defp booking_status(booking) do
@@ -151,6 +174,10 @@ defmodule Lacuna.Plugins.DefaultBooker do
         [day, month, year] = String.split(value, "/")
         Date.new!(String.to_integer(year), String.to_integer(month), String.to_integer(day))
 
+      Regex.match?(~r/^\d{1,2}-[A-Za-z]{3}-\d{4}$/, value) ->
+        [day, month, year] = String.split(value, "-")
+        Date.new!(String.to_integer(year), month_number!(month), String.to_integer(day))
+
       true ->
         nil
     end
@@ -159,6 +186,23 @@ defmodule Lacuna.Plugins.DefaultBooker do
   end
 
   defp normalize_date(_), do: nil
+
+  defp month_number!(month) do
+    case String.downcase(month) do
+      "jan" -> 1
+      "feb" -> 2
+      "mar" -> 3
+      "apr" -> 4
+      "may" -> 5
+      "jun" -> 6
+      "jul" -> 7
+      "aug" -> 8
+      "sep" -> 9
+      "oct" -> 10
+      "nov" -> 11
+      "dec" -> 12
+    end
+  end
 
   defp normalize_time(%Time{} = time), do: Time.truncate(time, :second)
 
