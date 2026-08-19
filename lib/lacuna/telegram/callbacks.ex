@@ -274,6 +274,8 @@ defmodule Lacuna.Telegram.Callbacks do
   ## Booking
 
   defp do_book(cq, slot_key) do
+    show_booking_in_progress(cq)
+
     case String.split(slot_key, "|") do
       [facility_id, date_iso, time_iso] ->
         with {:ok, date} <- Date.from_iso8601(date_iso),
@@ -315,7 +317,12 @@ defmodule Lacuna.Telegram.Callbacks do
 
   defp reply_book(cq, %Slot{} = slot, {:ok, _booking}) do
     actor = display_user(cq.from)
-    edit_message(cq, "✅ Booked: #{Views.render_slot(slot)} · by #{actor}")
+    text = "✅ Booked: #{Views.render_slot(slot)} · by #{actor}"
+
+    case publish_booking_receipt(cq, text) do
+      :ok -> :ok
+      {:error, _reason} -> edit_message(cq, text)
+    end
   end
 
   defp reply_book(cq, %Slot{} = slot, {:error, reason}) do
@@ -339,6 +346,19 @@ defmodule Lacuna.Telegram.Callbacks do
       "`#{trunc_inspect(reason)}`"
     end
   end
+
+  defp show_booking_in_progress(cq) do
+    empty_keyboard = %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: []}
+    edit_message(cq, "⏳ Checking availability and booking…", reply_markup: empty_keyboard)
+  end
+
+  defp publish_booking_receipt(
+         %ExGram.Model.CallbackQuery{message: %{chat: %{id: chat_id}, message_id: message_id}},
+         text
+       ),
+       do: Lacuna.Telegram.BookingReceipt.publish(chat_id, message_id, text)
+
+  defp publish_booking_receipt(_, _text), do: {:error, :missing_callback_message}
 
   ## Helpers
 
@@ -379,14 +399,20 @@ defmodule Lacuna.Telegram.Callbacks do
     end
   end
 
+  defp edit_message(cq, text, opts \\ [])
+
   defp edit_message(
          %ExGram.Model.CallbackQuery{message: %{chat: %{id: cid}, message_id: mid}},
-         text
+         text,
+         opts
        ) do
-    ExGram.edit_message_text(text, chat_id: cid, message_id: mid, parse_mode: "Markdown")
+    ExGram.edit_message_text(
+      text,
+      Keyword.merge([chat_id: cid, message_id: mid, parse_mode: "Markdown"], opts)
+    )
   end
 
-  defp edit_message(_, _), do: :ok
+  defp edit_message(_, _, _), do: :ok
 
   defp display_user(%{username: u}) when is_binary(u) and u != "", do: "@" <> u
   defp display_user(%{first_name: f}) when is_binary(f) and f != "", do: f
