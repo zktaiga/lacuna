@@ -299,15 +299,31 @@ defmodule Lacuna.Telegram.Free do
     end
   end
 
+  @doc false
+  def time_button_label(time, slots, {:ok, bookings}) do
+    count =
+      Enum.count(slots, fn slot ->
+        not Enum.any?(
+          bookings,
+          &(Lacuna.Bookings.active?(&1) and Lacuna.Bookings.same_slot?(&1, slot))
+        )
+      end)
+
+    "#{Views.format_time(time)} (#{count})"
+  end
+
+  def time_button_label(time, _slots, _error), do: "#{Views.format_time(time)} (?)"
+
   defp day_time_keyboard(date, slots) do
+    bookings = Lacuna.Bookings.upcoming(cached: true)
     by_hour = Enum.group_by(slots, & &1.start_time)
 
     time_buttons =
       by_hour
       |> Enum.sort_by(fn {t, _} -> t end, Time)
-      |> Enum.map(fn {t, _list} ->
+      |> Enum.map(fn {t, list} ->
         %ExGram.Model.InlineKeyboardButton{
-          text: Views.format_time(t),
+          text: time_button_label(t, list, bookings),
           callback_data: callback_data("t:#{Date.to_iso8601(date)}:#{format_time_url(t)}")
         }
       end)

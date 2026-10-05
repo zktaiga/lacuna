@@ -319,6 +319,31 @@ defmodule Lacuna.BookingsTest do
     assert Views.booking_button(slot, {:error, :unavailable}).text =~ "Check & book"
   end
 
+  test "time counts exclude held slots but include replacement candidates", %{slot: slot} do
+    other_court = %{slot | facility_id: "court-b", facility_name: "Court B"}
+
+    assert Lacuna.Telegram.Free.time_button_label(
+             slot.start_time,
+             [slot, other_court],
+             {:ok, [booking()]}
+           ) == "18:00 (2)"
+
+    held = %{slot | start_time: ~T[19:00:00], end_time: ~T[20:00:00]}
+    other = %{other_court | start_time: held.start_time, end_time: held.end_time}
+
+    assert Lacuna.Telegram.Free.time_button_label(
+             held.start_time,
+             [held, other],
+             {:ok, [booking()]}
+           ) == "19:00 (1)"
+
+    assert Lacuna.Telegram.Free.time_button_label(held.start_time, [held], {:ok, [booking()]}) ==
+             "19:00 (0)"
+
+    assert Lacuna.Telegram.Free.time_button_label(held.start_time, [held], {:error, :offline}) ==
+             "19:00 (?)"
+  end
+
   test "court buttons omit the selected time and use readable court names", %{slot: slot} do
     alias Lacuna.Telegram.Views
     slot = %{slot | facility_name: "Neighborhood 3  -Padel Court 2"}
@@ -330,7 +355,9 @@ defmodule Lacuna.BookingsTest do
 
     assert Views.booking_button(
              %{slot | start_time: ~T[19:00:00], end_time: ~T[20:00:00]},
-             {:ok, [booking()]}, show_time: false).text == "Neighborhood 3 / Court 2 · Already yours ✓"
+             {:ok, [booking()]},
+             show_time: false
+           ).text == "Neighborhood 3 / Court 2 · Already yours ✓"
   end
 
   test "replacement text lists the court once and distinguishes current and new", %{slot: slot} do
