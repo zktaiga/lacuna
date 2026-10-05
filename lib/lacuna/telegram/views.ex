@@ -80,9 +80,9 @@ defmodule Lacuna.Telegram.Views do
   end
 
   def court_label(name) do
-    case Regex.run(~r/^Neighborhood\s+(\d+)\s*-\s*Padel Court(?:\s+(\d+))?$/i, String.trim(name)) do
-      [_, community, court] -> "Neighborhood #{community} / Court #{court}"
-      [_, community] -> "Neighborhood #{community}"
+    case Regex.run(~r/^(.+?)\s*-\s*Padel Court(?:\s+(\d+))?$/i, String.trim(name)) do
+      [_, neighborhood, court] -> "#{String.trim(neighborhood)} / Court #{court}"
+      [_, neighborhood] -> String.trim(neighborhood)
       _ -> name
     end
   end
