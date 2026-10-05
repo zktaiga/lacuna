@@ -52,39 +52,85 @@ defmodule Lacuna.Telegram.Views do
   @doc "Inline keyboard with one Book button per slot."
   @spec book_keyboard([Slot.t()]) :: ExGram.Model.InlineKeyboardMarkup.t()
   def book_keyboard(slots) do
-    rows =
-      Enum.map(slots, fn s ->
-        [
-          %ExGram.Model.InlineKeyboardButton{
-            text: "Book #{format_time(s.start_time)} #{abbrev(s.facility_name)}",
-            callback_data: "book:" <> Slot.key(s)
-          }
-        ]
-      end)
-
+    bookings = Lacuna.Bookings.upcoming(cached: true)
+    rows = Enum.map(slots, fn slot -> [booking_button(slot, bookings)] end)
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
+  end
+
+  def booking_button(slot, bookings) do
+    label =
+      case bookings do
+        {:ok, list} ->
+          case Lacuna.Bookings.eligibility(slot, list) do
+            :bookable -> "Book"
+            {:already_booked, _} -> "Already booked"
+            {:replacement_required, _} -> "Replace booking…"
+            {:blocked, _} -> "Review bookings"
+          end
+
+        _ ->
+          "Check & book"
+      end
+
+    %ExGram.Model.InlineKeyboardButton{
+      text: "#{label} #{format_time(slot.start_time)} #{abbrev(slot.facility_name)}",
+      callback_data: "book:" <> Slot.key(slot)
+    }
+  end
+
+  def booking_notices(slots) do
+    case Lacuna.Bookings.upcoming(cached: true) do
+      {:ok, list} ->
+        slots
+        |> Enum.map(fn slot ->
+          case Lacuna.Bookings.eligibility(slot, list) do
+            {:replacement_required, booking} ->
+              "↔️ To book another slot on this court, cancel or replace:\n" <>
+                Lacuna.Bookings.summary(booking)
+
+            {:already_booked, booking} ->
+              "✅ Already booked: " <> Lacuna.Bookings.summary(booking)
+
+            {:blocked, _} ->
+              "⚠️ Multiple bookings on #{slot.facility_name}; review /bookings."
+
+            _ ->
+              nil
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.uniq()
+        |> Enum.join("\n\n")
+        |> case do
+          "" -> ""
+          text -> "\n\n" <> text
+        end
+
+      _ ->
+        "\n\n⚠️ Existing bookings could not be checked. They will be refreshed before any booking."
+    end
   end
 
   ## Bus event handlers
 
   @doc "Called by `Plugins.TelegramNotifier` for every event. Pure dispatch."
   def handle_event({:hunt_slot_opened, hunt, %Slot{} = slot}) do
-    if hunt.mode == :auto_book and hunt.blocked_reason != "active_booking_limit" do
+    if hunt.mode == :auto_book do
       auto_book(hunt, slot)
     else
-      text = "*New slot* · #{hunt.name}\n" <> render_slot(slot)
+      text = "*New slot* · #{hunt.name}\n" <> render_slot(slot) <> booking_notices([slot])
 
       ExGram.send_message(Access.configured_chat_id(), text,
         parse_mode: "Markdown",
         reply_markup: book_keyboard([slot])
       )
 
-      if hunt.blocked_reason != "active_booking_limit", do: stop_hunt_if_needed(hunt)
+      stop_hunt_if_needed(hunt)
     end
   end
 
   def handle_event({:slot_opened, %Slot{} = slot}) do
-    text = "*New slot*\n" <> render_slot(slot)
+    text = "*New slot*\n" <> render_slot(slot) <> booking_notices([slot])
 
     ExGram.send_message(Access.configured_chat_id(), text,
       parse_mode: "Markdown",
@@ -103,10 +149,7 @@ defmodule Lacuna.Telegram.Views do
   def handle_event(_other), do: :ok
 
   defp auto_book(hunt, %Slot{} = slot) do
-    prefs = Lacuna.Config.load!()
-    booker = prefs.plugins.booker || Lacuna.Plugins.DefaultBooker
-
-    case apply(booker, :book, [slot, %{actor: :hunt_auto_book, hunt_id: hunt.id}]) do
+    case Lacuna.Bookings.book(slot, %{actor: :hunt_auto_book, hunt_id: hunt.id}) do
       {:ok, _booking} ->
         ExGram.send_message(
           Access.configured_chat_id(),
@@ -118,8 +161,6 @@ defmodule Lacuna.Telegram.Views do
         stop_hunt_if_needed(hunt)
 
       {:error, reason} ->
-        if active_booking_limit?(reason), do: HuntStore.block(hunt.id, :active_booking_limit)
-
         ExGram.send_message(
           Access.configured_chat_id(),
           "❌ *Auto-book failed* · #{hunt.name}\n#{render_slot(slot)}\n#{format_booking_error(reason)}",
@@ -136,21 +177,7 @@ defmodule Lacuna.Telegram.Views do
 
   defp stop_hunt_if_needed(_hunt), do: :ok
 
-  defp active_booking_limit?(reason) do
-    inspect(reason) =~ "Residents are permitted to have 1 active bookings"
-  end
-
-  defp format_booking_error({:booking_not_confirmed, _response}) do
-    "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
-  end
-
-  defp format_booking_error(reason) do
-    if active_booking_limit?(reason) do
-      "This account already has an active booking for this amenity. Use /bookings to cancel it; auto-book hunts will wait instead of repeatedly retrying."
-    else
-      "`#{inspect(reason) |> String.slice(0, 200)}`"
-    end
-  end
+  defp format_booking_error(reason), do: Lacuna.Bookings.error_text(reason)
 
   defp pad(n) when n < 10, do: "0#{n}"
   defp pad(n), do: "#{n}"

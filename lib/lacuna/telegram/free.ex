@@ -18,7 +18,7 @@ defmodule Lacuna.Telegram.Free do
   require Logger
 
   alias Lacuna.{Clock, Slot, Telegram.Views}
-  alias Lacuna.Backend.{API, Availability, Cache, Courts, Session}
+  alias Lacuna.Backend.{API, Cache, Courts, Session}
 
   @lookahead_days 14
   @weekday_names %{
@@ -226,7 +226,7 @@ defmodule Lacuna.Telegram.Free do
 
   defp query_text(query, slots) do
     body = slots |> Enum.map_join("\n", &Views.render_slot/1)
-    "*Matches for* `#{query}`\n\n#{body}"
+    "*Matches for* `#{query}`\n\n#{body}" <> Views.booking_notices(slots)
   end
 
   defp fetch_open(%Date{} = date) do
@@ -331,17 +331,14 @@ defmodule Lacuna.Telegram.Free do
   defp time_text(date, at, slots) do
     n = length(slots)
     suffix = if n == 1, do: "1 court", else: "#{n} courts"
-    "*#{long_label(date)} · #{Views.format_time(at)}* — #{suffix} free.\n\nTap a court to book."
+
+    "*#{long_label(date)} · #{Views.format_time(at)}* — #{suffix} free.\n\nTap a court to book or review a replacement." <>
+      Views.booking_notices(slots)
   end
 
   defp court_keyboard(date, _at, slots) do
-    book_buttons =
-      Enum.map(slots, fn s ->
-        %ExGram.Model.InlineKeyboardButton{
-          text: shorten(s.facility_name),
-          callback_data: "book:" <> Slot.key(s)
-        }
-      end)
+    bookings = Lacuna.Bookings.upcoming(cached: true)
+    book_buttons = Enum.map(slots, &Views.booking_button(&1, bookings))
 
     rows = Enum.chunk_every(book_buttons, 2)
 
@@ -412,12 +409,24 @@ defmodule Lacuna.Telegram.Free do
   end
 
   defp gather(_session, courts, date) do
+    owned =
+      case Lacuna.Bookings.upcoming(cached: true) do
+        {:ok, list} -> list
+        _ -> []
+      end
+
     Enum.reduce_while(courts, {:ok, []}, fn court, {:ok, acc} ->
       session = Session.current!()
 
       case API.facility_availability(session, court.id, date) do
         {:ok, details} ->
-          slots = Availability.open_slots(Map.put_new(details, "facility_id", court.id), date)
+          slots =
+            Lacuna.Bookings.browsing_slots(
+              Map.put_new(details, "facility_id", court.id),
+              date,
+              owned
+            )
+
           {:cont, {:ok, acc ++ [{court, slots}]}}
 
         {:error, reason} ->
@@ -498,24 +507,6 @@ defmodule Lacuna.Telegram.Free do
       prefix
     end
   end
-
-  defp shorten(name) when is_binary(name) do
-    parts = name |> String.split(~r/[\s\-_]+/, trim: true)
-
-    initials =
-      parts
-      |> Enum.map_join("", fn p ->
-        cond do
-          p =~ ~r/^\d+$/ -> p
-          p == "" -> ""
-          true -> String.first(p) |> String.upcase()
-        end
-      end)
-
-    if String.length(initials) in 2..8, do: initials, else: String.slice(name, 0, 14)
-  end
-
-  defp shorten(_), do: "?"
 
   defp format_time_url(%Time{hour: h, minute: m}), do: "#{pad(h)}-#{pad(m)}"
 

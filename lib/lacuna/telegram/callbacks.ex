@@ -10,7 +10,8 @@ defmodule Lacuna.Telegram.Callbacks do
   | `book:<key>`   | Book a slot from anywhere              |
   """
 
-  alias Lacuna.{Clock, Slot, Watch.Config}
+  alias Lacuna.{Bookings, Clock, Slot, Watch.Config}
+  alias Lacuna.Bookings.Replacements
   alias Lacuna.Backend.{API, Availability, Session}
   alias Lacuna.Hunts.Settings
   alias Lacuna.Hunts.Store, as: HuntStore
@@ -26,6 +27,12 @@ defmodule Lacuna.Telegram.Callbacks do
   def handle(%ExGram.Model.CallbackQuery{data: "free:" <> _ = data} = cq, ctx) do
     ack_free(data, cq)
     dispatch_free(data, cq)
+    ctx
+  end
+
+  def handle(%ExGram.Model.CallbackQuery{data: "replace:" <> _} = cq, ctx) do
+    ExGram.answer_callback_query(cq.id, text: "Checking…")
+    dispatch(cq.data, cq)
     ctx
   end
 
@@ -274,6 +281,25 @@ defmodule Lacuna.Telegram.Callbacks do
   defp dispatch("bk:do:" <> id, cq),
     do: safe(fn -> BookingsView.execute_cancel(cq.message, id) end)
 
+  defp dispatch("replace:yes:" <> token, cq), do: do_replace(cq, token)
+
+  defp dispatch("replace:keep:" <> token, cq) do
+    case Replacements.discard(token, replacement_owner(cq)) do
+      {:ok, _} ->
+        edit_message(cq, "Your current booking was kept.", reply_markup: menu_keyboard())
+
+      {:error, :replacement_wrong_actor} ->
+        :ok
+
+      _ ->
+        edit_message(
+          cq,
+          "This confirmation expired or was already used. Reopen /free or /bookings.",
+          reply_markup: menu_keyboard()
+        )
+    end
+  end
+
   defp dispatch("book:" <> key, cq), do: do_book(cq, key)
 
   defp dispatch(_, _cq), do: :unknown
@@ -288,10 +314,7 @@ defmodule Lacuna.Telegram.Callbacks do
         with {:ok, date} <- Date.from_iso8601(date_iso),
              {:ok, time} <- Time.from_iso8601(time_iso),
              {:ok, %Slot{} = slot} <- rebuild_slot(facility_id, date, time) do
-          prefs = Lacuna.Config.load!()
-          booker = prefs.plugins.booker || Lacuna.Plugins.DefaultBooker
-
-          result = apply(booker, :book, [slot, %{actor: cq.from}])
+          result = Bookings.book(slot, %{actor: cq.from})
           reply_book(cq, slot, result)
           {:ack, ack_text(result)}
         else
@@ -315,11 +338,93 @@ defmodule Lacuna.Telegram.Callbacks do
       slot =
         details
         |> Map.put_new("facility_id", facility_id)
+        |> Map.delete("booked_slots_on_date")
+        |> Map.delete("slot_availability")
         |> Availability.open_slots(date)
         |> Enum.find(fn s -> Time.compare(s.start_time, time) == :eq end)
 
       if slot, do: {:ok, slot}, else: {:error, :slot_no_longer_open}
     end
+  end
+
+  defp do_replace(cq, token) do
+    case Replacements.take(token, replacement_owner(cq)) do
+      {:ok, intent} ->
+        edit_message(cq, "⏳ Rechecking the target and existing booking…",
+          reply_markup: empty_keyboard()
+        )
+
+        result =
+          Bookings.replace(intent.slot, intent.booking_id, %{actor: cq.from},
+            expected_booking: intent.expected_booking
+          )
+
+        case result do
+          {:ok, _} ->
+            reply_book(cq, intent.slot, result)
+
+          {:error, reason} ->
+            edit_message(cq, "Replacement stopped.\n" <> Bookings.error_text(reason),
+              reply_markup: menu_keyboard()
+            )
+        end
+
+      {:error, :replacement_wrong_actor} ->
+        :ok
+
+      _ ->
+        edit_message(
+          cq,
+          "This confirmation expired or was already used. Nothing else was cancelled. Reopen /free or /bookings.",
+          reply_markup: menu_keyboard()
+        )
+    end
+  end
+
+  defp replacement_owner(cq), do: {cq.from && cq.from.id, cq.message.chat.id}
+
+  defp empty_keyboard, do: %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: []}
+
+  defp menu_keyboard do
+    %ExGram.Model.InlineKeyboardMarkup{
+      inline_keyboard: [
+        [%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]
+      ]
+    }
+  end
+
+  defp reply_book(cq, %Slot{} = slot, {:error, {:replacement_required, booking}}) do
+    case Replacements.prepare(slot, booking, replacement_owner(cq)) do
+      {:ok, token} ->
+        text =
+          "*Replace your booking?*\n\n*Current:* #{Bookings.summary(booking)}\n*Target:* #{Views.render_slot(slot)}\n\nTo book this slot, your existing booking on this court must be cancelled first.\n⚠️ The new slot is not guaranteed; someone else could take it after cancellation.\n\nNothing changes until you confirm."
+
+        keyboard = %ExGram.Model.InlineKeyboardMarkup{
+          inline_keyboard: [
+            [
+              %ExGram.Model.InlineKeyboardButton{
+                text: "Cancel current & book target",
+                callback_data: "replace:yes:" <> token
+              },
+              %ExGram.Model.InlineKeyboardButton{
+                text: "Keep current booking",
+                callback_data: "replace:keep:" <> token
+              }
+            ]
+          ]
+        }
+
+        edit_message(cq, text, reply_markup: keyboard)
+
+      {:error, reason} ->
+        edit_message(cq, Bookings.error_text(reason), reply_markup: menu_keyboard())
+    end
+  end
+
+  defp reply_book(cq, %Slot{}, {:error, {:already_booked, booking}}) do
+    edit_message(cq, "✅ Already booked: " <> Bookings.summary(booking),
+      reply_markup: menu_keyboard()
+    )
   end
 
   defp reply_book(cq, %Slot{} = slot, {:ok, _booking}) do
@@ -340,19 +445,11 @@ defmodule Lacuna.Telegram.Callbacks do
   end
 
   defp ack_text({:ok, _}), do: "Booked!"
+  defp ack_text({:error, {:replacement_required, _}}), do: "Review replacement"
+  defp ack_text({:error, {:already_booked, _}}), do: "Already booked"
   defp ack_text({:error, _}), do: "Failed"
 
-  defp format_booking_error({:booking_not_confirmed, _response}) do
-    "The provider accepted the request, but the booking did not appear in upcoming bookings. It may have been rejected by a booking rule."
-  end
-
-  defp format_booking_error(reason) do
-    if inspect(reason) =~ "Residents are permitted to have 1 active bookings" do
-      "This account already has an active booking for this amenity. Use /bookings to cancel it, then try again."
-    else
-      "`#{trunc_inspect(reason)}`"
-    end
-  end
+  defp format_booking_error(reason), do: Bookings.error_text(reason)
 
   defp show_booking_in_progress(cq) do
     empty_keyboard = %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: []}

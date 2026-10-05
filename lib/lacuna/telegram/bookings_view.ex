@@ -117,9 +117,7 @@ defmodule Lacuna.Telegram.BookingsView do
   end
 
   def execute_cancel(message, booking_id) do
-    session = Session.current!()
-
-    case API.cancel_booking(session, booking_id) do
+    case Lacuna.Bookings.cancel(booking_id) do
       {:ok, _} ->
         HuntStore.clear_active_booking_blocks()
 
@@ -138,7 +136,7 @@ defmodule Lacuna.Telegram.BookingsView do
         )
 
       {:error, reason} ->
-        ExGram.edit_message_text("❌ Cancel failed: `#{trunc_inspect(reason)}`",
+        ExGram.edit_message_text("❌ " <> Lacuna.Bookings.error_text(reason),
           chat_id: message.chat.id,
           message_id: message.message_id,
           parse_mode: "Markdown",

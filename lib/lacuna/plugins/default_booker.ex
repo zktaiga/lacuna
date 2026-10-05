@@ -38,10 +38,12 @@ defmodule Lacuna.Plugins.DefaultBooker do
           }
           |> maybe_put_slot_id(slot)
 
+        before_booking = API.my_bookings(session)
+
         case API.make_booking(session, fields) do
           {:ok, response} ->
             Logger.info("Booking response: #{inspect(response, limit: :infinity)}")
-            confirm_booking(session, slot, response)
+            confirm_booking(session, slot, response, before_booking)
 
           {:error, _} = err ->
             err
@@ -55,50 +57,96 @@ defmodule Lacuna.Plugins.DefaultBooker do
   defp maybe_put_slot_id(fields, %Slot{slot_id: slot_id}),
     do: Map.put(fields, "facility_time_slot_id", to_string(slot_id))
 
-  defp confirm_booking(session, %Slot{} = slot, response) do
+  defp confirm_booking(session, %Slot{} = slot, response, before_booking) do
     booking_id = response_booking_id(response)
 
-    case find_confirmed_booking(session, slot, booking_id, 3) do
+    case find_confirmed_booking(session, slot, booking_id, before_booking, 3) do
       {:ok, booking} ->
         Cache.delete_prefix(:availability_day)
         Cache.delete(:my_bookings)
         {:ok, %{slot: slot, response: response, booking: booking}}
 
-      {:error, reason} ->
-        {:error, {reason, response}}
+      {:error, _reason} ->
+        {:error, {:booking_not_confirmed, response}}
     end
   end
 
-  defp find_confirmed_booking(session, slot, booking_id, attempts_left) do
-    with {:ok, data} <- API.my_bookings(session) do
-      data
-      |> upcoming_bookings()
-      |> Enum.find(&(booking_id_matches?(&1, booking_id) or matches_slot?(&1, slot)))
-      |> case do
-        nil when attempts_left > 1 ->
-          Process.sleep(500)
-          find_confirmed_booking(session, slot, booking_id, attempts_left - 1)
+  defp find_confirmed_booking(session, slot, booking_id, before_booking, attempts_left) do
+    booking =
+      case API.my_bookings(session) do
+        {:ok, data} ->
+          data
+          |> upcoming_bookings()
+          |> Enum.find(&confirms_creation?(&1, slot, booking_id, before_booking))
 
-        nil ->
-          {:error, :booking_not_confirmed}
-
-        booking ->
-          {:ok, booking}
+        _ ->
+          nil
       end
+
+    cond do
+      booking ->
+        {:ok, booking}
+
+      attempts_left > 1 ->
+        Process.sleep(500)
+        find_confirmed_booking(session, slot, booking_id, before_booking, attempts_left - 1)
+
+      true ->
+        {:error, :booking_not_confirmed}
     end
   end
 
-  defp upcoming_bookings(data) do
-    data
-    |> Map.get("my_bookings", %{})
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.filter(&upcoming?/1)
+  defp confirms_creation?(booking, _slot, booking_id, {:ok, %{"my_bookings" => groups}})
+       when not is_nil(booking_id) and is_map(groups) do
+    existing = groups |> Map.values() |> List.flatten()
+
+    Enum.all?(Map.values(groups), &is_list/1) and Enum.all?(existing, &is_map/1) and
+      booking_id_matches?(booking, booking_id) and
+      not Enum.any?(existing, &booking_id_matches?(&1, booking_id))
   end
+
+  defp confirms_creation?(booking, slot, nil, {:ok, %{"my_bookings" => groups}})
+       when is_map(groups) do
+    id = normalize_id(booking["booking_id"])
+    existing = groups |> Map.values() |> List.flatten()
+
+    Enum.all?(Map.values(groups), &is_list/1) and Enum.all?(existing, &is_map/1) and
+      id != nil and matches_slot?(booking, slot) and
+      not Enum.any?(existing, &booking_id_matches?(&1, id))
+  end
+
+  defp confirms_creation?(_, _, _, _), do: false
+
+  defp past_booking?(booking) do
+    now = Lacuna.Clock.local_now()
+    today = NaiveDateTime.to_date(now)
+
+    case booking |> first_present(["start_date", "booking_date", "date"]) |> normalize_date() do
+      %Date{} = date ->
+        end_time =
+          booking
+          |> first_present(["end_time", "booking_end_time", "to_time"])
+          |> normalize_time()
+
+        Date.compare(date, today) == :lt or
+          (date == today and end_time != nil and
+             Time.compare(end_time, NaiveDateTime.to_time(now)) != :gt)
+
+      _ ->
+        false
+    end
+  end
+
+  defp upcoming_bookings(%{"my_bookings" => groups}) when is_map(groups) do
+    groups |> Map.values() |> List.flatten() |> Enum.filter(&(is_map(&1) and upcoming?(&1)))
+  end
+
+  defp upcoming_bookings(_), do: []
 
   defp upcoming?(booking) do
     Map.get(booking, "type") == "upcoming_bookings" and
-      booking_status(booking) not in ["cancelled", "canceled"]
+      booking_status(booking) not in ["cancelled", "canceled", "rejected", "failed"] and
+      not past_booking?(booking)
   end
 
   defp response_booking_id(%{} = response), do: normalize_id(Map.get(response, "booking_id"))
@@ -133,12 +181,32 @@ defmodule Lacuna.Plugins.DefaultBooker do
   defp matches_slot?(booking, %Slot{} = slot) do
     booking_facility_matches?(booking, slot) and
       booking_date_matches?(booking, slot.date) and
-      booking_time_matches?(booking, slot.start_time)
+      booking_time_matches?(booking, slot.start_time) and
+      booking_end_matches?(booking, slot.end_time) and
+      booking_slot_id_matches?(booking, slot.slot_id)
   end
 
   defp booking_facility_matches?(booking, slot) do
-    Map.get(booking, "facility_id") == slot.facility_id or
-      Map.get(booking, "facility_name") == slot.facility_name
+    case normalize_id(booking["facility_id"]) do
+      nil -> booking["facility_name"] == slot.facility_name
+      id -> id == normalize_id(slot.facility_id)
+    end
+  end
+
+  defp booking_slot_id_matches?(booking, slot_id) do
+    case normalize_id(first_present(booking, ["facility_time_slot_id", "slot_id"])) do
+      nil -> true
+      id -> id == normalize_id(slot_id)
+    end
+  end
+
+  defp booking_end_matches?(booking, time) do
+    case booking
+         |> first_present(["end_time", "booking_end_time", "to_time"])
+         |> normalize_time() do
+      nil -> false
+      end_time -> Time.compare(end_time, time) == :eq
+    end
   end
 
   defp booking_date_matches?(booking, date) do
@@ -225,16 +293,9 @@ defmodule Lacuna.Plugins.DefaultBooker do
 
   @impl true
   def cancel(booking_id, _ctx) do
-    session = Session.current!()
-
-    case API.cancel_booking(session, booking_id) do
-      {:ok, _} ->
-        Cache.delete_prefix(:availability_day)
-        Cache.delete(:my_bookings)
-        :ok
-
-      {:error, _} = err ->
-        err
+    case Lacuna.Bookings.cancel(booking_id) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
     end
   end
 end

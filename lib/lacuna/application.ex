@@ -18,6 +18,7 @@ defmodule Lacuna.Application do
       Lacuna.Bus,
       {Lacuna.Watch.Config, []},
       {Lacuna.Backend.Cache, []},
+      {Lacuna.Bookings.Replacements, []},
       {Lacuna.Hunts.Store, []},
       {Lacuna.Hunts.Settings, []},
       {Lacuna.Backend.Session, []},

@@ -24,10 +24,46 @@ defmodule Lacuna.Backend.Availability do
       []
     else
       booked = parse_booked(details)
-      grid = grid(details, date, opts) |> Enum.reject(&overlaps_any?(elem(&1, 0), booked))
+
+      grid =
+        grid(details, date, opts)
+        |> Enum.reject(fn {times, id} ->
+          overlaps_any?(times, booked) or unavailable_slot?(details, id)
+        end)
+
       Enum.map(grid, &slot(&1, details, date))
     end
   end
+
+  # Missing availability entries retain the legacy overlap-only semantics.
+  # Explicit vetoes and exhausted capacity must agree: either closes the slot.
+  defp unavailable_slot?(%{"slot_availability" => availability}, id)
+       when is_map(availability) and not is_nil(id) do
+    case Map.get(availability, to_string(id)) do
+      %{} = entry ->
+        entry["is_available"] in [false, "false", 0, "0"] or
+          exhausted_capacity?(entry["slots"])
+
+      false ->
+        true
+
+      _ ->
+        false
+    end
+  end
+
+  defp unavailable_slot?(_, _), do: false
+
+  defp exhausted_capacity?(n) when is_number(n), do: n <= 0
+
+  defp exhausted_capacity?(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} -> n <= 0
+      _ -> false
+    end
+  end
+
+  defp exhausted_capacity?(_), do: false
 
   defp blocked?(%{"blocked_week_days" => blocked}, %Date{} = date) when is_list(blocked) do
     weekday = day_short(Date.day_of_week(date))

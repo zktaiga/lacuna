@@ -294,19 +294,83 @@ defmodule Lacuna.Backend.API do
     end
   end
 
-  @doc "Cancel a booking by id."
+  @doc """
+  Cancel a booking by id and verify the result with fresh booking reads.
+  Returns the unwrapped cancellation data only after an explicit cancelled
+  record or disappearance of a previously owned active booking is observed.
+  """
   @spec cancel_booking(map(), String.t()) :: result()
   def cancel_booking(session, booking_id) do
+    before_cancel = my_bookings(session)
     body = URI.encode_query(booking_id: booking_id)
 
     with {:ok, response, headers} <-
            request(:post, Contract.endpoint(:cancel_booking), body, session_headers(session),
              session: session
            ),
-         _ <- update_session_cookies(session, headers) do
-      {:ok, response}
+         _ <- update_session_cookies(session, headers),
+         {:ok, data} <- unwrap_response(response) do
+      verify_cancellation(session, booking_id, before_cancel, data, 3)
     end
   end
+
+  defp verify_cancellation(session, booking_id, before_cancel, data, attempts) do
+    confirmed =
+      with {:ok, fresh} <- my_bookings(session),
+           {:ok, records} <- booking_records(fresh) do
+        matching = Enum.filter(records, &same_booking_id?(&1, booking_id))
+        active = Enum.any?(matching, &active_booking?/1)
+        explicitly_cancelled = Enum.any?(matching, &cancelled_booking?/1)
+
+        previously_active =
+          with {:ok, before_data} <- before_cancel,
+               {:ok, before_records} <- booking_records(before_data) do
+            Enum.any?(before_records, &(same_booking_id?(&1, booking_id) and active_booking?(&1)))
+          else
+            _ -> false
+          end
+
+        not active and (explicitly_cancelled or (previously_active and matching == []))
+      else
+        _ -> false
+      end
+
+    cond do
+      confirmed ->
+        {:ok, data}
+
+      attempts > 1 ->
+        Process.sleep(500)
+        verify_cancellation(session, booking_id, before_cancel, data, attempts - 1)
+
+      true ->
+        {:error, {:cancellation_not_confirmed, booking_id, data}}
+    end
+  end
+
+  defp booking_records(%{"my_bookings" => groups}) when is_map(groups) do
+    lists = Map.values(groups)
+
+    if Enum.all?(lists, &is_list/1) and Enum.all?(List.flatten(lists), &is_map/1),
+      do: {:ok, List.flatten(lists)},
+      else: {:error, :invalid_bookings}
+  end
+
+  defp booking_records(_), do: {:error, :invalid_bookings}
+
+  defp same_booking_id?(booking, id),
+    do: booking["booking_id"] != nil and to_string(booking["booking_id"]) == to_string(id)
+
+  defp cancelled_booking?(booking),
+    do: normalized_booking_status(booking) in ["cancelled", "canceled"]
+
+  defp active_booking?(booking),
+    do:
+      booking["type"] == "upcoming_bookings" and
+        normalized_booking_status(booking) not in ["cancelled", "canceled", "rejected", "failed"]
+
+  defp normalized_booking_status(booking),
+    do: booking |> Map.get("status", "") |> to_string() |> String.trim() |> String.downcase()
 
   @doc "List the user's existing bookings."
   @spec my_bookings(map()) :: result()

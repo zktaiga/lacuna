@@ -65,6 +65,14 @@ hunt filters:
 
 `/free wed 18,19 thu 18,19` runs a one-shot search for specific days/times. bare hours are 24-hour values, so `7,8` means 07:00 and 08:00.
 
+## booking safety
+
+Slot buttons check bookings on the same court: a held slot is marked **Already booked**, while another active reservation offers **Replace booking…**. Bookings on other courts do not trigger a replacement. Free-slot browsing and opening alerts explain which reservation needs to be replaced; hunts never cancel automatically.
+
+Replacement shows the current and target reservations and requires explicit confirmation. Confirmations expire after five minutes, are bound to the requesting Telegram user and chat, and can only be used once. The bot serializes booking mutations, refreshes bookings and target availability, verifies cancellation, and then attempts the replacement. The target is not guaranteed: cancellation can leave you without either booking. If replacement fails, the bot reports that the original was cancelled and asks you to check `/bookings`.
+
+The provider remains authoritative. A household booking held by another account may be invisible to this bot; the bot reports that limit rather than guessing which booking to cancel. HTTP success alone does not confirm cancellation or booking creation, and explicit unavailable-slot flags are respected.
+
 ## session handling
 
 sessions are managed as a sliding `acsession` lease. login is followed by the dashboard activation call required by the backend, then a residential-unit lookup. authenticated requests send the minimal probed auth header (`Cookie: acsession=...`) by default, persist cookie expiry metadata, touch the lease shortly before expiry, and recover from HTTP/app-envelope 401 with a serialized single relogin. Set `LACUNA_AUTH_HEADER_MODE=full` if a future endpoint proves it needs the wider mobile-like header set.
