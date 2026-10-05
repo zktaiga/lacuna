@@ -275,6 +275,9 @@ defmodule Lacuna.Telegram.Callbacks do
 
   defp dispatch("bk:list", cq), do: safe(fn -> BookingsView.edit_to_list(cq.message) end)
 
+  defp dispatch("bk:v:" <> id, cq),
+    do: safe(fn -> BookingsView.edit_to_details(cq.message, id) end)
+
   defp dispatch("bk:c:" <> id, cq),
     do: safe(fn -> BookingsView.edit_to_confirm(cq.message, id) end)
 

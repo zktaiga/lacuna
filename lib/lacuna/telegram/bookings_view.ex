@@ -1,20 +1,8 @@
 defmodule Lacuna.Telegram.BookingsView do
-  @moduledoc """
-  `/bookings` — list upcoming bookings, with two-step Cancel buttons.
+  @moduledoc "Bookings: select a reservation, view details, then confirm cancellation."
 
-      list                 confirm                 done
-      ┌──────────────┐    ┌─────────────────┐    ┌──────────────┐
-      │ Sat 09 18:00 │    │ Cancel Sat 18?  │    │ ✅ Cancelled │
-      │ H3-PC-1      │    │                 │    │              │
-      │ [Cancel]     │ ─▶ │ [Yes, cancel]   │ ─▶ │ [← back]     │
-      │              │    │ [Keep it]       │    │              │
-      └──────────────┘    └─────────────────┘    └──────────────┘
-
-  We list `upcoming_bookings` only (the upstream's `type:
-  "upcoming_bookings"`). Past bookings aren't actionable.
-  """
-
-  alias Lacuna.Backend.{API, Cache, Session}
+  alias Lacuna.{Bookings, Clock}
+  alias Lacuna.Telegram.Views
   alias Lacuna.Hunts.Store, as: HuntStore
   require Logger
 
@@ -74,6 +62,31 @@ defmodule Lacuna.Telegram.BookingsView do
     end
   end
 
+  def edit_to_details(message, booking_id) do
+    with {:ok, list} <- fetch_upcoming(),
+         booking when not is_nil(booking) <-
+           Enum.find(list, &(to_string(&1["booking_id"]) == to_string(booking_id))) do
+      ExGram.edit_message_text(details_text(booking),
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        parse_mode: "Markdown",
+        reply_markup: %ExGram.Model.InlineKeyboardMarkup{
+          inline_keyboard: [
+            [
+              %ExGram.Model.InlineKeyboardButton{
+                text: "Cancel booking…",
+                callback_data: "bk:c:#{booking_id}"
+              }
+            ],
+            [%ExGram.Model.InlineKeyboardButton{text: "← Bookings", callback_data: "bk:list"}]
+          ]
+        }
+      )
+    else
+      _ -> edit_to_list(message)
+    end
+  end
+
   def edit_to_confirm(message, booking_id) do
     case fetch_upcoming() do
       {:ok, list} ->
@@ -83,7 +96,7 @@ defmodule Lacuna.Telegram.BookingsView do
           text = """
           *Cancel this booking?*
 
-          #{render_one(booking)}
+          #{details_text(booking)}
 
           This is irreversible.
           """
@@ -95,7 +108,10 @@ defmodule Lacuna.Telegram.BookingsView do
                   text: "Yes, cancel",
                   callback_data: "bk:do:#{booking_id}"
                 },
-                %ExGram.Model.InlineKeyboardButton{text: "Keep it", callback_data: "bk:list"}
+                %ExGram.Model.InlineKeyboardButton{
+                  text: "← Back",
+                  callback_data: "bk:v:#{booking_id}"
+                }
               ],
               [%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]
             ]
@@ -152,75 +168,69 @@ defmodule Lacuna.Telegram.BookingsView do
     end
   end
 
-  ## Data
+  ## Data and rendering
 
   defp fetch_upcoming do
-    case Cache.get(:my_bookings) do
-      {:ok, cached} ->
-        {:ok, cached}
-
-      :miss ->
-        session = Session.current!()
-
-        with {:ok, data} <- API.my_bookings(session) do
-          groups = Map.get(data, "my_bookings", %{})
-
-          list =
-            groups
-            |> Map.values()
-            |> List.flatten()
-            |> Enum.filter(&actionable_upcoming?/1)
-            |> Enum.sort_by(fn b -> {Map.get(b, "start_date"), Map.get(b, "start_time")} end)
-
-          Cache.put(
-            :my_bookings,
-            list,
-            Application.get_env(:lacuna, :bookings_cache_ttl_seconds, 30)
-          )
-
-          {:ok, list}
-        end
-    end
+    with {:ok, list} <- Bookings.upcoming(cached: true), do: {:ok, sorted(list)}
   end
 
-  defp actionable_upcoming?(booking) do
-    Map.get(booking, "type") == "upcoming_bookings" and
-      booking_status(booking) not in ["cancelled", "canceled"]
-  end
+  @doc false
+  def sorted(list),
+    do:
+      Enum.sort_by(list, fn booking ->
+        {_court, date, start_time, _end_time} = Bookings.snapshot(booking)
 
-  defp booking_status(booking) do
-    booking
-    |> Map.get("status", "")
-    |> to_string()
-    |> String.trim()
-    |> String.downcase()
-  end
+        {date && Date.to_gregorian_days(date),
+         start_time && Time.to_seconds_after_midnight(start_time)}
+      end)
 
-  ## Rendering
+  @doc false
+  def list_text(list),
+    do: "*Your bookings · #{length(list)} upcoming*\n\nSelect a booking to view or cancel it."
 
-  defp list_text(list) do
-    body =
-      list
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n\n", fn {b, i} -> "*#{i}.* #{render_one(b)}" end)
-
-    "📋 *Bookings* (#{length(list)} upcoming)\n\n" <> body
-  end
-
-  defp list_keyboard(list) do
+  @doc false
+  def list_keyboard(list) do
     rows =
-      Enum.map(list, fn b ->
-        bid = Map.get(b, "booking_id", "")
-
+      Enum.map(sorted(list), fn booking ->
         [
           %ExGram.Model.InlineKeyboardButton{
-            text: "Cancel #{shorten(b)}",
-            callback_data: "bk:c:#{bid}"
+            text: selection_label(booking),
+            callback_data: "bk:v:#{booking["booking_id"]}"
           }
         ]
       end)
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ nav_rows()}
+  end
+
+  defp selection_label(booking) do
+    {_court, date, start_time, end_time} = Bookings.snapshot(booking)
+
+    label =
+      if date && start_time && end_time do
+        [day, time] = String.split(Views.booking_time(date, start_time, end_time), " · ")
+        day = if date == Clock.local_today(), do: "Today", else: day
+        "#{day} · #{String.split(time, "–") |> hd()}"
+      else
+        "#{booking["start_date"]} · #{booking["start_time"]}"
+      end
+
+    label <> " · " <> Views.court_label(booking["facility_name"])
+  end
+
+  @doc false
+  def details_text(booking) do
+    {_court, date, start_time, end_time} = Bookings.snapshot(booking)
+
+    when_text =
+      if date && start_time && end_time,
+        do: Views.booking_time(date, start_time, end_time),
+        else: "#{booking["start_date"]} · #{booking["start_time"]}–#{booking["end_time"]}"
+
+    reference = booking["booking_no"]
+
+    "*#{Views.court_label(booking["facility_name"])}*\n\n#{when_text}" <>
+      if(reference && reference != "", do: "\n\nReference: `#{reference}`", else: "")
   end
 
   defp nav_keyboard do
@@ -229,14 +239,6 @@ defmodule Lacuna.Telegram.BookingsView do
 
   defp nav_rows do
     [[%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]]
-  end
-
-  defp render_one(b) do
-    "#{Map.get(b, "start_date")} · #{Map.get(b, "start_time")}–#{Map.get(b, "end_time")} · #{Map.get(b, "facility_name")} (`#{Map.get(b, "booking_no")}`)"
-  end
-
-  defp shorten(b) do
-    "#{Map.get(b, "start_date")} #{Map.get(b, "start_time")}"
   end
 
   defp trunc_inspect(t), do: t |> inspect() |> String.slice(0, 200)
