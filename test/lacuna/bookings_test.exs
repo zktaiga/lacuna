@@ -309,14 +309,36 @@ defmodule Lacuna.BookingsTest do
 
   test "the shared keyboard distinguishes replacement and available courts", %{slot: slot} do
     alias Lacuna.Telegram.Views
-    assert Views.booking_button(slot, {:ok, [booking()]}).text =~ "Replace booking"
+    assert Views.booking_button(slot, {:ok, [booking()]}).text =~ "Replace…"
 
     assert Views.booking_button(
              %{slot | facility_id: "court-b", facility_name: "Court B"},
              {:ok, [booking()]}
-           ).text =~ "Book "
+           ).text =~ "· Book"
 
     assert Views.booking_button(slot, {:error, :unavailable}).text =~ "Check & book"
+  end
+
+  test "court buttons omit the selected time and use readable court names", %{slot: slot} do
+    alias Lacuna.Telegram.Views
+    slot = %{slot | facility_name: "Neighborhood 3  -Padel Court 2"}
+
+    assert Views.booking_button(slot, {:ok, [booking()]}, show_time: false).text ==
+             "Neighborhood 3 / Court 2 · Replace…"
+
+    assert Views.court_label("Neighborhood 1 - Padel Court") == "Neighborhood 1"
+
+    assert Views.booking_button(
+             %{slot | start_time: ~T[19:00:00], end_time: ~T[20:00:00]},
+             {:ok, [booking()]}, show_time: false).text == "Neighborhood 3 / Court 2 · Already yours ✓"
+  end
+
+  test "replacement text lists the court once and distinguishes current and new", %{slot: slot} do
+    text = Lacuna.Telegram.Views.replacement_text(slot, booking())
+    assert text =~ "*Current:* Tue 13 Oct · 19:00–20:00"
+    assert text =~ "*New:* Tue 13 Oct · 18:00–19:00"
+    assert text =~ "you could lose both"
+    assert length(String.split(text, "Court A")) == 2
   end
 
   def booking(id \\ "old", court \\ "court-a", time \\ "19:00") do

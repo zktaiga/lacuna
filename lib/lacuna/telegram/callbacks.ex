@@ -285,8 +285,8 @@ defmodule Lacuna.Telegram.Callbacks do
 
   defp dispatch("replace:keep:" <> token, cq) do
     case Replacements.discard(token, replacement_owner(cq)) do
-      {:ok, _} ->
-        edit_message(cq, "Your current booking was kept.", reply_markup: menu_keyboard())
+      {:ok, intent} ->
+        Free.edit_to_time(cq.message, intent.slot.date, intent.slot.start_time)
 
       {:error, :replacement_wrong_actor} ->
         :ok
@@ -396,18 +396,17 @@ defmodule Lacuna.Telegram.Callbacks do
   defp reply_book(cq, %Slot{} = slot, {:error, {:replacement_required, booking}}) do
     case Replacements.prepare(slot, booking, replacement_owner(cq)) do
       {:ok, token} ->
-        text =
-          "*Replace your booking?*\n\n*Current:* #{Bookings.summary(booking)}\n*Target:* #{Views.render_slot(slot)}\n\nTo book this slot, your existing booking on this court must be cancelled first.\n⚠️ The new slot is not guaranteed; someone else could take it after cancellation.\n\nNothing changes until you confirm."
+        text = Views.replacement_text(slot, booking)
 
         keyboard = %ExGram.Model.InlineKeyboardMarkup{
           inline_keyboard: [
             [
               %ExGram.Model.InlineKeyboardButton{
-                text: "Cancel current & book target",
+                text: "Confirm replacement",
                 callback_data: "replace:yes:" <> token
               },
               %ExGram.Model.InlineKeyboardButton{
-                text: "Keep current booking",
+                text: "← Courts",
                 callback_data: "replace:keep:" <> token
               }
             ]

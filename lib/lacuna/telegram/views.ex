@@ -57,14 +57,14 @@ defmodule Lacuna.Telegram.Views do
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows}
   end
 
-  def booking_button(slot, bookings) do
+  def booking_button(slot, bookings, opts \\ []) do
     label =
       case bookings do
         {:ok, list} ->
           case Lacuna.Bookings.eligibility(slot, list) do
             :bookable -> "Book"
-            {:already_booked, _} -> "Already booked"
-            {:replacement_required, _} -> "Replace booking…"
+            {:already_booked, _} -> "Already yours ✓"
+            {:replacement_required, _} -> "Replace…"
             {:blocked, _} -> "Review bookings"
           end
 
@@ -73,9 +73,36 @@ defmodule Lacuna.Telegram.Views do
       end
 
     %ExGram.Model.InlineKeyboardButton{
-      text: "#{label} #{format_time(slot.start_time)} #{abbrev(slot.facility_name)}",
+      text:
+        "#{court_label(slot.facility_name)} · #{if Keyword.get(opts, :show_time, true), do: format_time(slot.start_time) <> " · ", else: ""}#{label}",
       callback_data: "book:" <> Slot.key(slot)
     }
+  end
+
+  def court_label(name) do
+    case Regex.run(~r/^Neighborhood\s+(\d+)\s*-\s*Padel Court(?:\s+(\d+))?$/i, String.trim(name)) do
+      [_, community, court] -> "Neighborhood #{community} / Court #{court}"
+      [_, community] -> "Neighborhood #{community}"
+      _ -> name
+    end
+  end
+
+  def replacement_text(slot, booking) do
+    {_court, date, start_time, end_time} = Lacuna.Bookings.snapshot(booking)
+
+    current =
+      if date && start_time && end_time,
+        do: booking_time(date, start_time, end_time),
+        else: Lacuna.Bookings.summary(booking)
+
+    "*Replace booking — #{court_label(slot.facility_name)}*\n\n*Current:* #{current}\n*New:* #{booking_time(slot.date, slot.start_time, slot.end_time)}\n\nYour current booking must be cancelled first. If the new slot is taken before we book it, you could lose both."
+  end
+
+  def booking_time(date, start_time, end_time) do
+    days = ~w(Mon Tue Wed Thu Fri Sat Sun)
+    months = ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
+
+    "#{Enum.at(days, Date.day_of_week(date) - 1)} #{date.day} #{Enum.at(months, date.month - 1)} · #{format_time(start_time)}–#{format_time(end_time)}"
   end
 
   def booking_notices(slots) do
@@ -206,17 +233,4 @@ defmodule Lacuna.Telegram.Views do
   defp month_short(10), do: "Oct"
   defp month_short(11), do: "Nov"
   defp month_short(12), do: "Dec"
-
-  defp abbrev(name) when is_binary(name) do
-    name
-    |> String.split()
-    |> Enum.map(fn
-      <<c::utf8, _::binary>> -> <<c::utf8>>
-      _ -> ""
-    end)
-    |> Enum.join()
-    |> String.upcase()
-  end
-
-  defp abbrev(_), do: "?"
 end

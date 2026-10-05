@@ -295,7 +295,7 @@ defmodule Lacuna.Telegram.Free do
     if n == 0 do
       "*#{long_label(date)}* — fully booked 😔"
     else
-      "*#{long_label(date)}* — #{n} slot#{plural(n)} open\n\nTap a time."
+      "*#{long_label(date)}*\n\nChoose a time."
     end
   end
 
@@ -305,9 +305,9 @@ defmodule Lacuna.Telegram.Free do
     time_buttons =
       by_hour
       |> Enum.sort_by(fn {t, _} -> t end, Time)
-      |> Enum.map(fn {t, list} ->
+      |> Enum.map(fn {t, _list} ->
         %ExGram.Model.InlineKeyboardButton{
-          text: "#{Views.format_time(t)} (#{length(list)})",
+          text: Views.format_time(t),
           callback_data: callback_data("t:#{Date.to_iso8601(date)}:#{format_time_url(t)}")
         }
       end)
@@ -329,18 +329,24 @@ defmodule Lacuna.Telegram.Free do
   end
 
   defp time_text(date, at, slots) do
-    n = length(slots)
-    suffix = if n == 1, do: "1 court", else: "#{n} courts"
+    end_time =
+      case slots do
+        [slot | _] -> slot.end_time
+        [] -> Time.add(at, 3600)
+      end
 
-    "*#{long_label(date)} · #{Views.format_time(at)}* — #{suffix} free.\n\nTap a court to book or review a replacement." <>
-      Views.booking_notices(slots)
+    "*#{Views.booking_time(date, at, end_time)}*\n\nChoose a court. Nothing is changed on this screen."
   end
 
   defp court_keyboard(date, _at, slots) do
     bookings = Lacuna.Bookings.upcoming(cached: true)
-    book_buttons = Enum.map(slots, &Views.booking_button(&1, bookings))
 
-    rows = Enum.chunk_every(book_buttons, 2)
+    book_buttons =
+      slots
+      |> Enum.sort_by(&Views.court_label(&1.facility_name))
+      |> Enum.map(&Views.booking_button(&1, bookings, show_time: false))
+
+    rows = Enum.map(book_buttons, &[&1])
 
     nav = [
       %ExGram.Model.InlineKeyboardButton{
@@ -512,9 +518,6 @@ defmodule Lacuna.Telegram.Free do
 
   defp pad(n) when n < 10, do: "0#{n}"
   defp pad(n), do: "#{n}"
-
-  defp plural(1), do: ""
-  defp plural(_), do: "s"
 
   defp trunc_inspect(t), do: t |> inspect() |> String.slice(0, 200)
 
