@@ -14,8 +14,14 @@ defmodule Lacuna.Telegram.Callbacks do
   alias Lacuna.Backend.{API, Availability, Session}
   alias Lacuna.Hunts.Settings
   alias Lacuna.Hunts.Store, as: HuntStore
-  alias Lacuna.Telegram.{BookingsView, Free, FreeSessions, HuntsView, Menu, Views, WatchView}
+  alias Lacuna.Telegram.{BookingsView, Free, HuntsView, Menu, Views, WatchView}
   require Logger
+
+  def handle(%ExGram.Model.CallbackQuery{data: "f:" <> _ = data} = cq, ctx) do
+    ack_free(data, cq)
+    dispatch_free(data, cq)
+    ctx
+  end
 
   def handle(%ExGram.Model.CallbackQuery{data: "free:" <> _ = data} = cq, ctx) do
     ack_free(data, cq)
@@ -33,21 +39,21 @@ defmodule Lacuna.Telegram.Callbacks do
 
   ## Dispatch
 
+  defp dispatch_free("f:" <> action, cq), do: dispatch_free_action(action, nil, cq)
+
   defp dispatch_free("free:v1:" <> rest, cq) do
-    with [session_id, action] <- String.split(rest, ":", parts: 2),
-         true <- FreeSessions.valid?(session_id, cq.message.chat.id, cq.message.message_id) do
-      dispatch_free_action(action, session_id, cq)
-    else
+    case String.split(rest, ":", parts: 2) do
+      [_legacy_session_id, action] ->
+        Logger.info("Legacy stateful /free callback translated to stateless action")
+        dispatch_free_action(action, nil, cq)
+
       _ ->
-        Logger.info("Expired /free callback; replacing stale menu")
         safe(fn -> Free.replace_expired(cq.message) end)
     end
   end
 
-  defp dispatch_free("free:" <> _legacy, cq) do
-    Logger.info("Legacy /free callback; replacing stale menu")
-    safe(fn -> Free.replace_expired(cq.message) end)
-  end
+  defp dispatch_free("free:" <> legacy_action, cq),
+    do: dispatch_free_action(legacy_action, nil, cq)
 
   defp dispatch_free_action("close", _session_id, cq) do
     safe(fn -> ExGram.delete_message(cq.message.chat.id, cq.message.message_id) end)
@@ -93,8 +99,6 @@ defmodule Lacuna.Telegram.Callbacks do
   defp dispatch("hunt:show:" <> id, cq), do: safe(fn -> HuntsView.edit_detail(cq.message, id) end)
   defp dispatch("hunt:days:" <> id, cq), do: safe(fn -> HuntsView.edit_days(cq.message, id) end)
   defp dispatch("hunt:times:" <> id, cq), do: safe(fn -> HuntsView.edit_times(cq.message, id) end)
-  defp dispatch("hunt:mode:" <> id, cq), do: safe(fn -> HuntsView.edit_mode(cq.message, id) end)
-  defp dispatch("hunt:after:" <> id, cq), do: safe(fn -> HuntsView.edit_after(cq.message, id) end)
 
   defp dispatch("hunt:toggle:" <> id, cq) do
     HuntStore.toggle_active(id)
@@ -148,6 +152,9 @@ defmodule Lacuna.Telegram.Callbacks do
       _ -> :ok
     end
   end
+
+  defp dispatch("hunt:mode:" <> id, cq), do: safe(fn -> HuntsView.edit_mode(cq.message, id) end)
+  defp dispatch("hunt:after:" <> id, cq), do: safe(fn -> HuntsView.edit_after(cq.message, id) end)
 
   defp dispatch("free:close", cq) do
     safe(fn -> ExGram.delete_message(cq.message.chat.id, cq.message.message_id) end)
@@ -422,13 +429,20 @@ defmodule Lacuna.Telegram.Callbacks do
 
   ## Telegram callback ack — always answer, never leave the spinner
 
+  defp ack_free("f:" <> action, cq) do
+    text = if action == "close", do: "Closed", else: "Refreshing…"
+    ExGram.answer_callback_query(cq.id, text: text)
+  end
+
   defp ack_free("free:v1:" <> rest, cq) do
     text = if String.ends_with?(rest, ":close"), do: "Closed", else: "Refreshing…"
     ExGram.answer_callback_query(cq.id, text: text)
   end
 
-  defp ack_free("free:" <> _legacy, cq),
-    do: ExGram.answer_callback_query(cq.id, text: "This menu expired; opening a fresh one.")
+  defp ack_free("free:" <> action, cq) do
+    text = if action == "close", do: "Closed", else: "Refreshing…"
+    ExGram.answer_callback_query(cq.id, text: text)
+  end
 
   defp finalize({:ack, text}, cq), do: ExGram.answer_callback_query(cq.id, text: text)
 

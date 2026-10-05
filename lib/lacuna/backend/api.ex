@@ -57,7 +57,11 @@ defmodule Lacuna.Backend.API do
     case request(:post, Contract.endpoint(:dashboard), "", headers, session: nil) do
       {:ok, _response, dashboard_headers} ->
         merged_cookie = merge_cookies(cookie, dashboard_headers)
-        {:ok, %{login_data | cookie: merged_cookie}}
+
+        {:ok,
+         login_data
+         |> Map.put(:cookie, merged_cookie)
+         |> put_newer_expiry(cookie_expires_at(dashboard_headers))}
 
       {:error, _} = err ->
         err
@@ -81,7 +85,11 @@ defmodule Lacuna.Backend.API do
             _ -> nil
           end
 
-        {:ok, login_data |> Map.put(:cookie, merged_cookie) |> Map.put(:ru_id, ru_id)}
+        {:ok,
+         login_data
+         |> Map.put(:cookie, merged_cookie)
+         |> Map.put(:ru_id, ru_id)
+         |> put_newer_expiry(cookie_expires_at(ru_headers))}
 
       {:error, _} ->
         {:ok, Map.put(login_data, :ru_id, nil)}
@@ -95,9 +103,7 @@ defmodule Lacuna.Backend.API do
   defp merge_cookies(existing, headers) do
     new_pairs =
       headers
-      |> Enum.flat_map(fn {k, v} ->
-        if String.downcase(to_string(k)) == "set-cookie", do: List.wrap(v), else: []
-      end)
+      |> set_cookie_lines()
       |> Enum.map(fn line ->
         line |> String.split(";", parts: 2) |> List.first() |> String.trim()
       end)
@@ -114,6 +120,106 @@ defmodule Lacuna.Backend.API do
     |> Enum.uniq_by(fn pair -> pair |> String.split("=", parts: 2) |> List.first() end)
     |> Enum.reverse()
     |> Enum.join("; ")
+  end
+
+  defp put_newer_expiry(data, nil), do: data
+
+  defp put_newer_expiry(%{acsession_expires_at: nil} = data, expires_at),
+    do: %{data | acsession_expires_at: expires_at}
+
+  defp put_newer_expiry(%{acsession_expires_at: current} = data, expires_at) do
+    if DateTime.compare(expires_at, current) == :gt,
+      do: %{data | acsession_expires_at: expires_at},
+      else: data
+  end
+
+  defp cookie_expires_at(headers) do
+    headers
+    |> set_cookie_lines()
+    |> Enum.filter(&String.starts_with?(&1, "acsession="))
+    |> Enum.find_value(&parse_cookie_expiry/1)
+  end
+
+  defp set_cookie_lines(headers) do
+    headers
+    |> Enum.flat_map(fn {k, v} ->
+      if String.downcase(to_string(k)) == "set-cookie", do: List.wrap(v), else: []
+    end)
+  end
+
+  defp parse_cookie_expiry(line) do
+    attrs =
+      line
+      |> String.split(";")
+      |> Enum.drop(1)
+      |> Enum.map(&String.trim/1)
+
+    case find_max_age(attrs) do
+      seconds when is_integer(seconds) -> DateTime.add(DateTime.utc_now(), seconds, :second)
+      nil -> attrs |> find_expires() |> parse_http_date()
+    end
+  end
+
+  defp find_max_age(attrs) do
+    Enum.find_value(attrs, fn attr ->
+      case String.split(attr, "=", parts: 2) do
+        [name, value] when name in ["Max-Age", "max-age"] -> parse_int(value)
+        _ -> nil
+      end
+    end)
+  end
+
+  defp find_expires(attrs) do
+    Enum.find_value(attrs, fn attr ->
+      case String.split(attr, "=", parts: 2) do
+        [name, value] when name in ["Expires", "expires"] -> value
+        _ -> nil
+      end
+    end)
+  end
+
+  defp parse_int(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_http_date(nil), do: nil
+
+  defp parse_http_date(value) do
+    with [_, day, month, year, hour, minute, second] <-
+           Regex.run(
+             ~r/^\w{3},\s*(\d{2})-(\w{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+GMT$/,
+             value
+           ),
+         month when is_integer(month) <- month_number(month),
+         {:ok, date} <-
+           Date.new(String.to_integer(year), month, String.to_integer(day)),
+         {:ok, time} <-
+           Time.new(String.to_integer(hour), String.to_integer(minute), String.to_integer(second)) do
+      DateTime.new!(date, time, "Etc/UTC")
+    else
+      _ -> nil
+    end
+  end
+
+  defp month_number(month) do
+    %{
+      "Jan" => 1,
+      "Feb" => 2,
+      "Mar" => 3,
+      "Apr" => 4,
+      "May" => 5,
+      "Jun" => 6,
+      "Jul" => 7,
+      "Aug" => 8,
+      "Sep" => 9,
+      "Oct" => 10,
+      "Nov" => 11,
+      "Dec" => 12
+    }
+    |> Map.get(month)
   end
 
   @doc "List all facilities for the user. Returns the inner `facilities[]` array."
@@ -246,11 +352,9 @@ defmodule Lacuna.Backend.API do
 
   defp update_session_cookies(%{cookie: existing} = _session, headers) do
     new = merge_cookies(existing, headers)
+    expires_at = cookie_expires_at(headers)
 
-    if new != existing do
-      Lacuna.Backend.Session.update_cookie(new)
-    end
-
+    Lacuna.Backend.Session.update_cookie(new, expires_at)
     :ok
   rescue
     _ -> :ok
@@ -301,38 +405,45 @@ defmodule Lacuna.Backend.API do
     end
   end
 
-  # Mirrors the mobile client's authenticator: on an authentication failure
-  # from an authenticated call, force a fresh login and retry once. The
-  # backend's PHP session has an unpredictable idle TTL (default
-  # `session.gc_maxlifetime` 24min, GC fires probabilistically), so trying
-  # to predict expiry is futile — just recover on demand.
-  #
-  # Returns the retry result, or `nil` to signal "give up and let caller
-  # see the original 401".
+  # Auth recovery is lease-aware: a rejected request first checks whether
+  # another caller already refreshed the in-memory lease. Only the request
+  # that still owns the current rejected cookie is allowed to force a relogin.
+  # That avoids needless login storms, which matter because a fresh login can
+  # invalidate the previous `acsession`.
   defp retry_after_relogin(method, path, body, opts) do
-    with %_{} <- Keyword.get(opts, :session),
-         false <- Keyword.get(opts, :__retried, false),
-         :ok <- record_auth_failure() do
-      Lacuna.Backend.Session.invalidate()
-      Lacuna.Backend.Session.clear_cache()
+    with %Lacuna.Backend.Session{} = rejected <- Keyword.get(opts, :session),
+         false <- Keyword.get(opts, :__retried, false) do
+      case Lacuna.Backend.Session.handle_auth_rejection(rejected.cookie) do
+        {:retry, %Lacuna.Backend.Session{} = fresh} ->
+          Logger.info("Backend.API: 401 on #{path}, retrying with newer auth lease")
+          retry_with_session(method, path, body, opts, fresh)
 
-      case Lacuna.Backend.Session.current!() do
-        %Lacuna.Backend.Session{} = fresh ->
-          Logger.info("Backend.API: 401 on #{path}, re-logged in and retrying once")
-          new_headers = Lacuna.Backend.Session.auth_headers(fresh)
-          new_opts = Keyword.merge(opts, session: fresh, __retried: true)
-          request(method, path, body, new_headers, new_opts)
+        :relogin ->
+          case Lacuna.Backend.Session.current!() do
+            %Lacuna.Backend.Session{} = fresh ->
+              Logger.info("Backend.API: 401 on #{path}, re-logged in and retrying once")
+              retry_with_session(method, path, body, opts, fresh)
+
+            {:error, _} = err ->
+              _ = record_auth_failure()
+              err
+
+            _ ->
+              nil
+          end
 
         _ ->
           nil
       end
     else
-      {:pause, until} ->
-        {:error, {:auth_backoff, until}}
-
-      _ ->
-        nil
+      _ -> nil
     end
+  end
+
+  defp retry_with_session(method, path, body, opts, fresh) do
+    new_headers = Lacuna.Backend.Session.auth_headers(fresh)
+    new_opts = Keyword.merge(opts, session: fresh, __retried: true)
+    request(method, path, body, new_headers, new_opts)
   end
 
   defp log_provider_request(method, path, status) do
@@ -412,7 +523,13 @@ defmodule Lacuna.Backend.API do
     case Jason.decode(data) do
       {:ok, %{"comm_id" => comm_id, "user_id" => user_id} = parsed} ->
         {:ok,
-         %{cookie: cookie, comm_id: comm_id, user_id: user_id, uris: Map.get(parsed, "uris", [])}}
+         %{
+           cookie: cookie,
+           acsession_expires_at: cookie_expires_at(headers),
+           comm_id: comm_id,
+           user_id: user_id,
+           uris: Map.get(parsed, "uris", [])
+         }}
 
       {:ok, parsed} ->
         {:error, {:login_unexpected, parsed}}

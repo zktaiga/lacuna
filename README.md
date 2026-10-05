@@ -67,7 +67,7 @@ hunt filters:
 
 ## session handling
 
-sessions are cached in memory. login is followed by the dashboard activation call required by the backend, then a residential-unit lookup. authenticated requests mirror the mobile client context headers and recover from both HTTP 401 and app-envelope 401 by invalidating the cached session, logging in again, and retrying once.
+sessions are managed as a sliding `acsession` lease. login is followed by the dashboard activation call required by the backend, then a residential-unit lookup. authenticated requests send the minimal probed auth header (`Cookie: acsession=...`) by default, persist cookie expiry metadata, touch the lease shortly before expiry, and recover from HTTP/app-envelope 401 with a serialized single relogin. Set `LACUNA_AUTH_HEADER_MODE=full` if a future endpoint proves it needs the wider mobile-like header set.
 
 ## extending
 

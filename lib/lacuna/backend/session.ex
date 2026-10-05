@@ -18,6 +18,8 @@ defmodule Lacuna.Backend.Session do
             password: nil,
             cookie: nil,
             session_id: nil,
+            acsession_expires_at: nil,
+            last_success_at: nil,
             comm_id: nil,
             user_id: nil,
             ru_id: nil,
@@ -54,29 +56,43 @@ defmodule Lacuna.Backend.Session do
   @doc "Forget the persisted session cache, if configured."
   def clear_cache, do: GenServer.cast(__MODULE__, :clear_cache)
 
-  @doc "Replace the cookie jar in-place. Called by the API client after every response."
-  def update_cookie(cookie) when is_binary(cookie),
-    do: GenServer.cast(__MODULE__, {:update_cookie, cookie})
+  @doc "Replace the cookie lease in-place. Called by the API client after authenticated responses."
+  def update_cookie(cookie, acsession_expires_at \\ nil)
 
-  def update_cookie(_), do: :ok
+  def update_cookie(cookie, acsession_expires_at) when is_binary(cookie),
+    do: GenServer.cast(__MODULE__, {:update_cookie, cookie, acsession_expires_at})
+
+  def update_cookie(_, _), do: :ok
+
+  @doc "Return lease metadata for diagnostics and expiry-aware background touch scheduling."
+  def lease_info, do: GenServer.call(__MODULE__, :lease_info)
+
+  @doc "Handle a rejected authenticated request without clobbering a newer session lease."
+  def handle_auth_rejection(rejected_cookie),
+    do: GenServer.call(__MODULE__, {:auth_rejected, rejected_cookie})
 
   @doc """
   Headers the API client should add on every authenticated request.
 
-  The cookie jar is sufficient for authentication, but the Android client
-  also sends `Session-Id`, `comm_id`, and `Community-Code` from its okhttp
-  interceptor. Some facility side effects appear to rely on that contextual
-  header set even when the main API response succeeds, so mirror it exactly
-  for authenticated calls.
+  Live probing shows `acsession` is the actual auth lease for reads and
+  booking attempts. The legacy full header mode remains available as a
+  diagnostic fallback if a future endpoint proves to need the wider mobile
+  context.
   """
   @spec auth_headers(t()) :: [{String.t(), String.t()}]
   def auth_headers(%__MODULE__{} = s) do
-    [
-      {"Cookie", s.cookie || ""},
-      {"Session-Id", s.session_id || s.cookie || ""},
-      {"comm_id", s.comm_id || ""},
-      {"Community-Code", ""}
-    ] ++ Contract.static_headers()
+    case Application.get_env(:lacuna, :auth_header_mode, :minimal) do
+      mode when mode in [:full, "full"] ->
+        [
+          {"Cookie", s.cookie || ""},
+          {"Session-Id", s.session_id || s.cookie || ""},
+          {"comm_id", s.comm_id || ""},
+          {"Community-Code", ""}
+        ] ++ Contract.static_headers()
+
+      _ ->
+        [{"Cookie", acsession_cookie(s.cookie) || s.cookie || ""}] ++ Contract.static_headers()
+    end
   end
 
   ## GenServer
@@ -122,8 +138,47 @@ defmodule Lacuna.Backend.Session do
     end
   end
 
+  def handle_call(:lease_info, _from, state) do
+    info =
+      Map.take(state, [
+        :status,
+        :logged_in_at,
+        :last_success_at,
+        :acsession_expires_at,
+        :auth_paused_until
+      ])
+
+    {:reply, info, state}
+  end
+
+  def handle_call({:auth_rejected, rejected_cookie}, _from, %{status: :ok} = state) do
+    if same_auth_cookie?(state.cookie, rejected_cookie) do
+      Logger.info("Booking backend rejected current auth lease; next request will relogin")
+      clear_cached_session()
+      {:reply, :relogin, %{state | status: :idle, cookie: nil, session_id: nil}}
+    else
+      Logger.info(
+        "Booking backend rejected a stale auth lease; retrying with newer in-memory lease"
+      )
+
+      {:reply, {:retry, state}, state}
+    end
+  end
+
+  def handle_call({:auth_rejected, _rejected_cookie}, _from, state) do
+    {:reply, :relogin, %{state | status: :idle, cookie: nil, session_id: nil}}
+  end
+
   defp current_unpaused(state) do
     case state do
+      %{status: :ok, acsession_expires_at: %DateTime{} = expires_at} ->
+        if DateTime.compare(DateTime.utc_now(), expires_at) == :gt do
+          Logger.info("Cached booking backend auth lease expired; logging in before request")
+          current_unpaused(%{state | status: :idle, cookie: nil, session_id: nil})
+        else
+          {:reply, state, state}
+        end
+
       %{status: :ok} ->
         {:reply, state, state}
 
@@ -151,8 +206,18 @@ defmodule Lacuna.Backend.Session do
     {:noreply, state}
   end
 
-  def handle_cast({:update_cookie, cookie}, state) do
-    new = %{state | cookie: cookie, session_id: cookie}
+  def handle_cast({:update_cookie, cookie, acsession_expires_at}, state) do
+    expires_at = acsession_expires_at || state.acsession_expires_at
+
+    new = %{
+      state
+      | status: :ok,
+        cookie: cookie,
+        session_id: cookie,
+        acsession_expires_at: expires_at,
+        last_success_at: DateTime.utc_now()
+    }
+
     persist_cached_session(new)
     {:noreply, new}
   end
@@ -170,6 +235,8 @@ defmodule Lacuna.Backend.Session do
            | status: :ok,
              cookie: cookie,
              session_id: cookie,
+             acsession_expires_at: Map.get(login, :acsession_expires_at),
+             last_success_at: DateTime.utc_now(),
              comm_id: comm_id,
              user_id: user_id,
              ru_id: Map.get(login, :ru_id),
@@ -192,6 +259,9 @@ defmodule Lacuna.Backend.Session do
          :ok <- cache_context_matches?(data),
          {:ok, logged_in_at} <- parse_cached_time(data["logged_in_at"]),
          true <- cache_fresh?(logged_in_at),
+         {:ok, acsession_expires_at} <- parse_optional_cached_time(data["acsession_expires_at"]),
+         true <- not expired?(acsession_expires_at),
+         {:ok, last_success_at} <- parse_optional_cached_time(data["last_success_at"]),
          cookie when is_binary(cookie) and cookie != "" <- data["cookie"] do
       Logger.info("Restored cached booking backend session")
 
@@ -204,7 +274,9 @@ defmodule Lacuna.Backend.Session do
           user_id: data["user_id"],
           ru_id: data["ru_id"],
           uris: data["uris"] || [],
-          logged_in_at: logged_in_at
+          logged_in_at: logged_in_at,
+          acsession_expires_at: acsession_expires_at,
+          last_success_at: last_success_at
       }
     else
       _ -> state
@@ -223,6 +295,9 @@ defmodule Lacuna.Backend.Session do
         ru_id: state.ru_id,
         uris: state.uris,
         logged_in_at: state.logged_in_at && DateTime.to_iso8601(state.logged_in_at),
+        acsession_expires_at:
+          state.acsession_expires_at && DateTime.to_iso8601(state.acsession_expires_at),
+        last_success_at: state.last_success_at && DateTime.to_iso8601(state.last_success_at),
         backend_base_url: Contract.base_url(),
         backend_client_package: Contract.client_package(),
         backend_client_build: Contract.client_build()
@@ -265,6 +340,29 @@ defmodule Lacuna.Backend.Session do
       error -> error
     end
   end
+
+  defp parse_optional_cached_time(nil), do: {:ok, nil}
+
+  defp parse_optional_cached_time(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      _ -> {:ok, nil}
+    end
+  end
+
+  defp expired?(nil), do: false
+  defp expired?(%DateTime{} = at), do: DateTime.compare(DateTime.utc_now(), at) == :gt
+
+  defp same_auth_cookie?(a, b), do: acsession_cookie(a) == acsession_cookie(b)
+
+  defp acsession_cookie(cookie) when is_binary(cookie) do
+    cookie
+    |> String.split(";")
+    |> Enum.map(&String.trim/1)
+    |> Enum.find(&String.starts_with?(&1, "acsession="))
+  end
+
+  defp acsession_cookie(_), do: nil
 
   defp cache_fresh?(%DateTime{} = logged_in_at) do
     max_age = Application.get_env(:lacuna, :session_cache_max_age_minutes, 43_200)

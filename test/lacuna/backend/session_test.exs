@@ -8,6 +8,7 @@ defmodule Lacuna.Backend.SessionTest do
     old_base = Application.get_env(:lacuna, :backend_base_url)
     old_pkg = Application.get_env(:lacuna, :backend_client_package)
     old_build = Application.get_env(:lacuna, :backend_client_build)
+    old_auth_header_mode = Application.get_env(:lacuna, :auth_header_mode)
 
     Application.put_env(:lacuna, :backend_base_url, "http://localhost:#{bypass.port}/")
     Application.put_env(:lacuna, :backend_client_package, "com.example.app")
@@ -20,12 +21,31 @@ defmodule Lacuna.Backend.SessionTest do
       restore_env(:backend_base_url, old_base)
       restore_env(:backend_client_package, old_pkg)
       restore_env(:backend_client_build, old_build)
+      restore_env(:auth_header_mode, old_auth_header_mode)
     end)
 
     %{bypass: bypass}
   end
 
-  test "authenticated headers mirror the mobile client context", %{bypass: bypass} do
+  test "authenticated headers use the acsession lease by default", %{bypass: bypass} do
+    expect_login_flow(bypass)
+
+    session = Session.current!()
+    headers = Session.auth_headers(session)
+
+    assert {"Cookie", "acsession=ac-2"} in headers
+
+    refute Enum.any?(headers, fn {name, _} ->
+             name in ["Session-Id", "comm_id", "Community-Code"]
+           end)
+
+    assert {"Client-Version", "123"} in headers
+    assert {"Client-Package", "com.example.app"} in headers
+    assert {"X-ACCLIENT", "member_123"} in headers
+  end
+
+  test "full auth header mode remains available as a fallback", %{bypass: bypass} do
+    Application.put_env(:lacuna, :auth_header_mode, "full")
     expect_login_flow(bypass)
 
     session = Session.current!()
@@ -35,9 +55,6 @@ defmodule Lacuna.Backend.SessionTest do
     assert {"Session-Id", "PHPSESSID=php-1; acsession=ac-2"} in headers
     assert {"comm_id", "community-1"} in headers
     assert {"Community-Code", ""} in headers
-    assert {"Client-Version", "123"} in headers
-    assert {"Client-Package", "com.example.app"} in headers
-    assert {"X-ACCLIENT", "member_123"} in headers
   end
 
   test "app-level 401 invalidates cached session, logs in again, and retries once", %{
@@ -88,11 +105,11 @@ defmodule Lacuna.Backend.SessionTest do
     assert_receive :login
     assert_receive :dashboard
     assert_receive :ru
-    assert_receive {:my_bookings, 1, ["community-1"]}
+    assert_receive {:my_bookings, 1, []}
     assert_receive :login
     assert_receive :dashboard
     assert_receive :ru
-    assert_receive {:my_bookings, 2, ["community-1"]}
+    assert_receive {:my_bookings, 2, []}
   end
 
   defp expect_login_flow(bypass) do

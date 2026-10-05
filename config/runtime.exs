@@ -56,6 +56,12 @@ config :lacuna,
   hunt_store_path: env!("LACUNA_HUNT_STORE_PATH", :string, "/app/data/hunts.json"),
   hunt_settings_path: env!("LACUNA_HUNT_SETTINGS_PATH", :string, "/app/data/hunt_settings.json"),
   session_cache_max_age_minutes: env!("LACUNA_SESSION_CACHE_MAX_AGE_MINUTES", :integer, 43_200),
+  auth_header_mode: env!("LACUNA_AUTH_HEADER_MODE", :string, "minimal"),
+  session_lease_touch_enabled: env!("LACUNA_SESSION_LEASE_TOUCH_ENABLED", :boolean, true),
+  session_lease_touch_margin_seconds:
+    env!("LACUNA_SESSION_LEASE_TOUCH_MARGIN_SECONDS", :integer, 600),
+  session_lease_touch_unknown_interval_seconds:
+    env!("LACUNA_SESSION_LEASE_TOUCH_UNKNOWN_INTERVAL_SECONDS", :integer, 3300),
   log_provider_requests: env!("LACUNA_LOG_PROVIDER_REQUESTS", :boolean, false),
   availability_cache_ttl_seconds: env!("LACUNA_AVAILABILITY_CACHE_TTL_SECONDS", :integer, 180),
   free_session_ttl_seconds: env!("LACUNA_FREE_SESSION_TTL_SECONDS", :integer, 30 * 60),

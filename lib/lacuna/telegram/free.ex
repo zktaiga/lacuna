@@ -19,7 +19,6 @@ defmodule Lacuna.Telegram.Free do
 
   alias Lacuna.{Clock, Slot, Telegram.Views}
   alias Lacuna.Backend.{API, Availability, Cache, Courts, Session}
-  alias Lacuna.Telegram.FreeSessions
 
   @lookahead_days 14
   @weekday_names %{
@@ -43,12 +42,11 @@ defmodule Lacuna.Telegram.Free do
 
   @spec send_root(integer()) :: :ok
   def send_root(chat_id) do
-    session_id = FreeSessions.create(chat_id)
     text = "*Find slots*\n\nPick a day."
-    markup = day_keyboard(session_id)
+    markup = day_keyboard()
 
     case ExGram.send_message(chat_id, text, parse_mode: "Markdown", reply_markup: markup) do
-      {:ok, %{message_id: message_id}} -> FreeSessions.attach_message(session_id, message_id)
+      {:ok, _} -> :ok
       other -> Logger.warning("/free send failed: #{inspect(other)}")
     end
 
@@ -107,53 +105,42 @@ defmodule Lacuna.Telegram.Free do
 
   ## Edits (callback handlers)
 
-  def edit_to_root(message) do
-    session_id = FreeSessions.create(message.chat.id, message.message_id)
-    edit_to_root(message, session_id)
+  def edit_to_root(message), do: edit_to_root(message, nil)
+
+  def edit_to_root(message, _legacy_session_id) do
+    edit(message, "*Find slots*\n\nPick a day.", day_keyboard())
   end
 
-  def edit_to_root(message, session_id) do
-    edit(message, "*Find slots*\n\nPick a day.", day_keyboard(session_id))
-  end
+  def replace_expired(message), do: edit_to_root(message)
 
-  def replace_expired(message) do
-    fallback_send(message.chat.id, "This /free menu expired. Opened a fresh one.")
-    send_root(message.chat.id)
-  end
-
-  def edit_to_day(message, session_id, %Date{} = date) do
+  def edit_to_day(message, _legacy_session_id, %Date{} = date) do
     case fetch_open(date) do
       {:ok, by_court} ->
         flat = flatten(by_court)
-        edit(message, day_text(date, flat), day_time_keyboard(session_id, date, flat))
+        edit(message, day_text(date, flat), day_time_keyboard(date, flat))
 
       {:error, reason} ->
-        edit(message, "Couldn't fetch: `#{trunc_inspect(reason)}`", back_to_root(session_id))
+        edit(message, "Couldn't fetch: `#{trunc_inspect(reason)}`", back_to_root())
     end
   end
 
-  def edit_to_day(message, %Date{} = date) do
-    session_id = FreeSessions.create(message.chat.id, message.message_id)
-    edit_to_day(message, session_id, date)
-  end
+  def edit_to_day(message, %Date{} = date), do: edit_to_day(message, nil, date)
 
-  def edit_to_time(message, session_id, %Date{} = date, %Time{} = at) do
+  def edit_to_time(message, _legacy_session_id, %Date{} = date, %Time{} = at) do
     case fetch_open(date) do
       {:ok, by_court} ->
         slots =
           flatten(by_court) |> Enum.filter(fn s -> Time.compare(s.start_time, at) == :eq end)
 
-        edit(message, time_text(date, at, slots), court_keyboard(session_id, date, at, slots))
+        edit(message, time_text(date, at, slots), court_keyboard(date, at, slots))
 
       {:error, reason} ->
-        edit(message, "Couldn't fetch: `#{trunc_inspect(reason)}`", back_to_root(session_id))
+        edit(message, "Couldn't fetch: `#{trunc_inspect(reason)}`", back_to_root())
     end
   end
 
-  def edit_to_time(message, %Date{} = date, %Time{} = at) do
-    session_id = FreeSessions.create(message.chat.id, message.message_id)
-    edit_to_time(message, session_id, date, at)
-  end
+  def edit_to_time(message, %Date{} = date, %Time{} = at),
+    do: edit_to_time(message, nil, date, at)
 
   ## Data
 
@@ -284,7 +271,7 @@ defmodule Lacuna.Telegram.Free do
 
   ## Rendering
 
-  defp day_keyboard(session_id) do
+  defp day_keyboard do
     today = Clock.local_today()
     range = 0..(@lookahead_days - 1)
 
@@ -294,12 +281,12 @@ defmodule Lacuna.Telegram.Free do
 
         %ExGram.Model.InlineKeyboardButton{
           text: short_label(date, delta),
-          callback_data: free_callback(session_id, "d:#{Date.to_iso8601(date)}")
+          callback_data: callback_data("d:#{Date.to_iso8601(date)}")
         }
       end
 
     rows = Enum.chunk_every(buttons, 3)
-    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [menu_row(session_id)]}
+    %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [menu_row()]}
   end
 
   defp day_text(date, slots) do
@@ -312,7 +299,7 @@ defmodule Lacuna.Telegram.Free do
     end
   end
 
-  defp day_time_keyboard(session_id, date, slots) do
+  defp day_time_keyboard(date, slots) do
     by_hour = Enum.group_by(slots, & &1.start_time)
 
     time_buttons =
@@ -321,8 +308,7 @@ defmodule Lacuna.Telegram.Free do
       |> Enum.map(fn {t, list} ->
         %ExGram.Model.InlineKeyboardButton{
           text: "#{Views.format_time(t)} (#{length(list)})",
-          callback_data:
-            free_callback(session_id, "t:#{Date.to_iso8601(date)}:#{format_time_url(t)}")
+          callback_data: callback_data("t:#{Date.to_iso8601(date)}:#{format_time_url(t)}")
         }
       end)
 
@@ -331,11 +317,11 @@ defmodule Lacuna.Telegram.Free do
     nav = [
       %ExGram.Model.InlineKeyboardButton{
         text: "← Days",
-        callback_data: free_callback(session_id, "root")
+        callback_data: callback_data("root")
       },
       %ExGram.Model.InlineKeyboardButton{
         text: "Done",
-        callback_data: free_callback(session_id, "close")
+        callback_data: callback_data("close")
       }
     ]
 
@@ -348,7 +334,7 @@ defmodule Lacuna.Telegram.Free do
     "*#{long_label(date)} · #{Views.format_time(at)}* — #{suffix} free.\n\nTap a court to book."
   end
 
-  defp court_keyboard(session_id, date, _at, slots) do
+  defp court_keyboard(date, _at, slots) do
     book_buttons =
       Enum.map(slots, fn s ->
         %ExGram.Model.InlineKeyboardButton{
@@ -362,38 +348,38 @@ defmodule Lacuna.Telegram.Free do
     nav = [
       %ExGram.Model.InlineKeyboardButton{
         text: "← Times",
-        callback_data: free_callback(session_id, "d:#{Date.to_iso8601(date)}")
+        callback_data: callback_data("d:#{Date.to_iso8601(date)}")
       },
       %ExGram.Model.InlineKeyboardButton{
         text: "Done",
-        callback_data: free_callback(session_id, "close")
+        callback_data: callback_data("close")
       }
     ]
 
     %ExGram.Model.InlineKeyboardMarkup{inline_keyboard: rows ++ [nav]}
   end
 
-  defp menu_row(session_id) do
+  defp menu_row do
     [
       %ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"},
       %ExGram.Model.InlineKeyboardButton{
         text: "Done",
-        callback_data: free_callback(session_id, "close")
+        callback_data: callback_data("close")
       }
     ]
   end
 
-  defp back_to_root(session_id) do
+  defp back_to_root do
     %ExGram.Model.InlineKeyboardMarkup{
       inline_keyboard: [
         [
           %ExGram.Model.InlineKeyboardButton{
             text: "← Days",
-            callback_data: free_callback(session_id, "root")
+            callback_data: callback_data("root")
           },
           %ExGram.Model.InlineKeyboardButton{
             text: "Done",
-            callback_data: free_callback(session_id, "close")
+            callback_data: callback_data("close")
           }
         ]
       ]
@@ -456,7 +442,8 @@ defmodule Lacuna.Telegram.Free do
     [[%ExGram.Model.InlineKeyboardButton{text: "← Menu", callback_data: "menu:root"}]]
   end
 
-  defp free_callback(session_id, action), do: "free:v1:#{session_id}:#{action}"
+  @doc false
+  def callback_data(action), do: "f:#{action}"
 
   defp edit(message, text, markup) do
     case ExGram.edit_message_text(text,
@@ -469,14 +456,12 @@ defmodule Lacuna.Telegram.Free do
         :ok
 
       {:error, reason} ->
-        Logger.warning("/free edit failed, sending fresh menu: #{inspect(reason)}")
-
-        fallback_send(
-          message.chat.id,
-          "That /free menu could not be updated. Opened a fresh one."
-        )
-
-        send_root(message.chat.id)
+        if message_not_modified?(reason) do
+          :ok
+        else
+          Logger.warning("/free edit failed without fallback send: #{inspect(reason)}")
+          :ok
+        end
 
       other ->
         Logger.warning("/free edit returned unexpected response: #{inspect(other)}")
@@ -484,12 +469,10 @@ defmodule Lacuna.Telegram.Free do
     end
   end
 
-  defp fallback_send(chat_id, text) do
-    case ExGram.send_message(chat_id, text) do
-      {:ok, _} -> :ok
-      other -> Logger.warning("/free fallback send failed: #{inspect(other)}")
-    end
-  end
+  defp message_not_modified?(%ExGram.Error{code: 400, message: message}) when is_binary(message),
+    do: String.contains?(message, "message is not modified")
+
+  defp message_not_modified?(_), do: false
 
   defp short_label(_date, 0), do: "Today"
   defp short_label(_date, 1), do: "Tom"
