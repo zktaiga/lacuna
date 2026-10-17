@@ -227,11 +227,10 @@ defmodule Lacuna.Backend.API do
   def list_facilities(session) do
     body = URI.encode_query(offset: "0", ru_id: "", categories: "[]")
 
-    with {:ok, response, headers} <-
+    with {:ok, response, _headers} <-
            request(:post, Contract.endpoint(:facility_list), body, session_headers(session),
              session: session
            ),
-         _ <- update_session_cookies(session, headers),
          {:ok, inner} <- unwrap_response(response),
          %{"facilities" => %{"facilities" => list}} <- inner do
       {:ok, list}
@@ -254,7 +253,7 @@ defmodule Lacuna.Backend.API do
         date_info: format_date(date)
       )
 
-    with {:ok, response, headers} <-
+    with {:ok, response, _headers} <-
            request(
              :post,
              Contract.endpoint(:facility_bookings_info),
@@ -262,7 +261,6 @@ defmodule Lacuna.Backend.API do
              session_headers(session),
              session: session
            ),
-         _ <- update_session_cookies(session, headers),
          {:ok, inner} <- unwrap_response(response),
          %{"facility_details" => details} <- inner do
       {:ok, details}
@@ -285,11 +283,10 @@ defmodule Lacuna.Backend.API do
       |> Map.put_new("is_moderated", "false")
       |> URI.encode_query()
 
-    with {:ok, response, headers} <-
+    with {:ok, response, _headers} <-
            request(:post, Contract.endpoint(:make_booking), body, session_headers(session),
              session: session
-           ),
-         _ <- update_session_cookies(session, headers) do
+           ) do
       unwrap_response(response)
     end
   end
@@ -304,11 +301,10 @@ defmodule Lacuna.Backend.API do
     before_cancel = my_bookings(session)
     body = URI.encode_query(booking_id: booking_id)
 
-    with {:ok, response, headers} <-
+    with {:ok, response, _headers} <-
            request(:post, Contract.endpoint(:cancel_booking), body, session_headers(session),
              session: session
            ),
-         _ <- update_session_cookies(session, headers),
          {:ok, data} <- unwrap_response(response) do
       verify_cancellation(session, booking_id, before_cancel, data, 3)
     end
@@ -377,11 +373,10 @@ defmodule Lacuna.Backend.API do
   def my_bookings(session) do
     body = URI.encode_query(offset_details: ~s({"offset": 0}), categories: "[]")
 
-    with {:ok, response, headers} <-
+    with {:ok, response, _headers} <-
            request(:post, Contract.endpoint(:my_bookings), body, session_headers(session),
              session: session
-           ),
-         _ <- update_session_cookies(session, headers) do
+           ) do
       unwrap_response(response)
     end
   end
@@ -390,16 +385,8 @@ defmodule Lacuna.Backend.API do
 
   defp session_headers(nil), do: Contract.static_headers()
 
-  defp session_headers(%Lacuna.Backend.Session{} = session) do
-    # Callers often hold a session struct for a whole workflow. If one request
-    # refreshes the cached login, that struct is stale. Always prefer the
-    # current GenServer state when available so later requests do not keep
-    # presenting the expired cookie jar.
-    case current_session() do
-      %Lacuna.Backend.Session{} = fresh -> Lacuna.Backend.Session.auth_headers(fresh)
-      _ -> Lacuna.Backend.Session.auth_headers(session)
-    end
-  end
+  defp session_headers(%Lacuna.Backend.Session{} = session),
+    do: Lacuna.Backend.Session.auth_headers(session)
 
   # Push new Set-Cookies back into the Session GenServer so the next
   # call sees them. Best-effort: we never crash a request because the
@@ -414,17 +401,21 @@ defmodule Lacuna.Backend.API do
 
   defp update_session_cookies(nil, _headers), do: :ok
 
-  defp update_session_cookies(%{cookie: existing} = _session, headers) do
-    new = merge_cookies(existing, headers)
-    expires_at = cookie_expires_at(headers)
-
-    Lacuna.Backend.Session.update_cookie(new, expires_at)
-    :ok
+  defp update_session_cookies(session, headers) do
+    Lacuna.Backend.Session.merge_response_cookies(
+      session,
+      merge_cookies(nil, headers),
+      cookie_expires_at(headers)
+    )
   rescue
     _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
 
   defp request(method, path, body, headers, opts) do
+    # Capture headers and ownership from the same lease, including retries.
+    {headers, opts} = request_lease(headers, opts)
     url = Contract.base_url() <> path
 
     req_headers =
@@ -450,6 +441,7 @@ defmodule Lacuna.Backend.API do
         if auth_rejected?(decoded) do
           retry_after_relogin(method, path, body, opts) || wrap(decoded, rh)
         else
+          update_session_cookies(Keyword.get(opts, :session), rh)
           wrap(decoded, rh)
         end
 
@@ -466,6 +458,17 @@ defmodule Lacuna.Backend.API do
       {:error, reason} ->
         log_provider_request(method, path, {:transport, reason})
         {:error, {:transport, reason}}
+    end
+  end
+
+  defp request_lease(headers, opts) do
+    case Keyword.get(opts, :session) do
+      %Lacuna.Backend.Session{} = supplied ->
+        actual = current_session() || supplied
+        {Lacuna.Backend.Session.auth_headers(actual), Keyword.put(opts, :session, actual)}
+
+      _ ->
+        {headers, opts}
     end
   end
 

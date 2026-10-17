@@ -17,6 +17,7 @@ defmodule Lacuna.Backend.Session do
             email: nil,
             password: nil,
             cookie: nil,
+            lease_id: nil,
             session_id: nil,
             acsession_expires_at: nil,
             last_success_at: nil,
@@ -56,13 +57,9 @@ defmodule Lacuna.Backend.Session do
   @doc "Forget the persisted session cache, if configured."
   def clear_cache, do: GenServer.cast(__MODULE__, :clear_cache)
 
-  @doc "Replace the cookie lease in-place. Called by the API client after authenticated responses."
-  def update_cookie(cookie, acsession_expires_at \\ nil)
-
-  def update_cookie(cookie, acsession_expires_at) when is_binary(cookie),
-    do: GenServer.cast(__MODULE__, {:update_cookie, cookie, acsession_expires_at})
-
-  def update_cookie(_, _), do: :ok
+  @doc "Atomically merge response cookies only while the request still owns the auth lease."
+  def merge_response_cookies(%__MODULE__{} = request_session, delta, expires_at),
+    do: GenServer.call(__MODULE__, {:merge_response_cookies, request_session, delta, expires_at})
 
   @doc "Return lease metadata for diagnostics and expiry-aware background touch scheduling."
   def lease_info, do: GenServer.call(__MODULE__, :lease_info)
@@ -151,6 +148,26 @@ defmodule Lacuna.Backend.Session do
     {:reply, info, state}
   end
 
+  def handle_call({:merge_response_cookies, request_session, delta, expires_at}, _from, state) do
+    if state.status == :ok and state.lease_id == request_session.lease_id and
+         same_auth_cookie?(state.cookie, request_session.cookie) do
+      cookie = merge_cookie_delta(state.cookie, delta)
+
+      new = %{
+        state
+        | cookie: cookie,
+          session_id: cookie,
+          acsession_expires_at: expires_at || state.acsession_expires_at,
+          last_success_at: DateTime.utc_now()
+      }
+
+      persist_cached_session(new)
+      {:reply, :ok, new}
+    else
+      {:reply, :stale, state}
+    end
+  end
+
   def handle_call({:auth_rejected, rejected_cookie}, _from, %{status: :ok} = state) do
     if same_auth_cookie?(state.cookie, rejected_cookie) do
       Logger.info("Booking backend rejected current auth lease; next request will relogin")
@@ -206,22 +223,6 @@ defmodule Lacuna.Backend.Session do
     {:noreply, state}
   end
 
-  def handle_cast({:update_cookie, cookie, acsession_expires_at}, state) do
-    expires_at = acsession_expires_at || state.acsession_expires_at
-
-    new = %{
-      state
-      | status: :ok,
-        cookie: cookie,
-        session_id: cookie,
-        acsession_expires_at: expires_at,
-        last_success_at: DateTime.utc_now()
-    }
-
-    persist_cached_session(new)
-    {:noreply, new}
-  end
-
   ## Internal
 
   defp do_login(state) do
@@ -234,6 +235,7 @@ defmodule Lacuna.Backend.Session do
            state
            | status: :ok,
              cookie: cookie,
+             lease_id: make_ref(),
              session_id: cookie,
              acsession_expires_at: Map.get(login, :acsession_expires_at),
              last_success_at: DateTime.utc_now(),
@@ -269,6 +271,7 @@ defmodule Lacuna.Backend.Session do
         state
         | status: :ok,
           cookie: cookie,
+          lease_id: make_ref(),
           session_id: data["session_id"] || cookie,
           comm_id: data["comm_id"],
           user_id: data["user_id"],
@@ -354,6 +357,17 @@ defmodule Lacuna.Backend.Session do
   defp expired?(%DateTime{} = at), do: DateTime.compare(DateTime.utc_now(), at) == :gt
 
   defp same_auth_cookie?(a, b), do: acsession_cookie(a) == acsession_cookie(b)
+
+  defp merge_cookie_delta(existing, delta) do
+    ((existing || "") <> ";" <> delta)
+    |> String.split(";")
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reverse()
+    |> Enum.uniq_by(&(&1 |> String.split("=", parts: 2) |> hd()))
+    |> Enum.reverse()
+    |> Enum.join("; ")
+  end
 
   defp acsession_cookie(cookie) when is_binary(cookie) do
     cookie
