@@ -485,6 +485,117 @@ defmodule Lacuna.AgentTest do
     assert Enum.any?(Agent.get(pid, & &1.calls), &(&1 == {:cancel, "old"}))
   end
 
+  test "requested availability identity is validated before attaching the catalog identity", %{
+    pid: pid,
+    opts: opts
+  } do
+    for value <- ["court-other", nil, "", 42, %{}] do
+      Agent.update(pid, fn state ->
+        payload = Map.put(details(), "facility_id", value)
+        %{state | availability: Map.put(state.availability, "court-b", {:ok, payload})}
+      end)
+
+      assert %{"ok" => true, "data" => data} = call("availability", range(), opts)
+      refute data["complete"]
+      assert Enum.at(data["coverage"], 1)["error"]["code"] == "invalid_availability"
+      refute Enum.any?(data["slots"], &(&1["court_id"] == "court-b"))
+    end
+
+    Agent.update(pid, fn state ->
+      %{
+        state
+        | availability:
+            Map.put(
+              state.availability,
+              "court-b",
+              {:ok, Map.put(details(), "facility_id", "court-b")}
+            )
+      }
+    end)
+
+    assert %{"data" => %{"complete" => true}} = call("availability", range(), opts)
+  end
+
+  test "reads apply shared row, capacity and weekday validation to coverage", %{
+    pid: pid,
+    opts: opts
+  } do
+    for {field, value} <- [
+          {"booked_slots_on_date", [%{"duration" => 60}]},
+          {"slot_availability", %{"slot-18" => %{"is_available" => "maybe"}}},
+          {"slots_capacity_details", %{"slot-18" => %{"capacity" => 2, "available" => nil}}},
+          {"blocked_week_days", ["5"]},
+          {"week_days", nil}
+        ] do
+      Agent.update(pid, fn state ->
+        %{
+          state
+          | availability:
+              Map.put(state.availability, "court-b", {:ok, Map.put(details(), field, value)})
+        }
+      end)
+
+      assert %{"ok" => true, "data" => data} = call("availability", range(), opts)
+      refute data["complete"]
+      assert Enum.at(data["coverage"], 1)["error"]["code"] == "invalid_availability"
+      refute Enum.any?(data["slots"], &(&1["court_id"] == "court-b"))
+    end
+  end
+
+  test "read eligibility does not advertise unsupported or unknown-price slots as bookable", %{
+    pid: pid,
+    opts: opts
+  } do
+    for {payload, reason} <- [
+          {Map.put(details(), "is_chargeable", "1"), "paid_facility_unsupported"},
+          {Map.delete(details(), "facility_rate"), "unknown_facility_price"},
+          {Map.put(details(), "facility_rate", "0oops"), "unknown_facility_price"},
+          {%{
+             "is_facility_fixed_slot_based" => false,
+             "facility_rate" => 0,
+             "start_hour" => 18,
+             "end_hour" => 20,
+             "booking_hrs" => 1
+           }, "unsupported_booking_mode"}
+        ] do
+      Agent.update(pid, fn state ->
+        %{state | availability: Map.put(state.availability, "court-b", {:ok, payload})}
+      end)
+
+      assert %{"ok" => true, "data" => data} = call("availability", range(), opts)
+      assert data["complete"]
+      slots = Enum.filter(data["slots"], &(&1["court_id"] == "court-b"))
+      assert slots != []
+
+      assert Enum.all?(
+               slots,
+               &(&1["eligibility"] == %{"status" => "blocked", "reason" => reason})
+             )
+
+      assert Enum.all?(slots, &is_nil(&1["fee_aed"]))
+    end
+  end
+
+  test "current free fixed metadata without rate and empty list capacity stays supported", %{
+    pid: pid,
+    opts: opts
+  } do
+    payload =
+      details()
+      |> Map.delete("facility_rate")
+      |> Map.put("is_chargeable", "0")
+      |> Map.put("slots_capacity_details", [])
+
+    Agent.update(pid, fn state ->
+      %{state | availability: Map.put(state.availability, "court-b", {:ok, payload})}
+    end)
+
+    assert %{"ok" => true, "data" => data} = call("availability", range(), opts)
+    assert data["complete"]
+    slots = Enum.filter(data["slots"], &(&1["court_id"] == "court-b"))
+    assert Enum.all?(slots, &(&1["eligibility"]["status"] == "bookable" and &1["fee_aed"] == 0))
+  end
+
   def booking(id \\ "old", court \\ "court-a", time \\ "19:00") do
     %{
       "booking_id" => id,

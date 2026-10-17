@@ -9,7 +9,7 @@ defmodule Lacuna.Agent do
   """
 
   alias Lacuna.{Bookings, Slot}
-  alias Lacuna.Backend.{API, Courts, Session}
+  alias Lacuna.Backend.{API, Availability, Courts, Session}
 
   @operations ~w(availability bookings book replace cancel)
   @window_days 14
@@ -171,10 +171,12 @@ defmodule Lacuna.Agent do
       safely(fn ->
         with {:ok, details} <- api(opts).facility_availability(session(opts), court.id, day),
              {:ok, slots} <- browsing_slots(details, court, day, raw) do
+          support = Availability.validate_bookable(details)
+
           slots =
             slots
             |> Enum.filter(&future?(&1, opts))
-            |> Enum.map(&public_slot(&1, raw, bookings_error, courts))
+            |> Enum.map(&public_slot(&1, raw, bookings_error, courts, support))
 
           {:ok, slots}
         end
@@ -199,7 +201,8 @@ defmodule Lacuna.Agent do
   defp browsing_slots(details, court, day, raw) when is_map(details) do
     # Provider responses can omit the ID; attach the requested identity before
     # parsing so held-slot matching works. Catalog names are authoritative here.
-    with :ok <- validate_occupancy(details) do
+    with :ok <- Availability.validate(details),
+         :ok <- requested_identity(details, court.id) do
       details =
         details |> Map.put("facility_id", court.id) |> Map.put("facility_name", court.name)
 
@@ -211,38 +214,25 @@ defmodule Lacuna.Agent do
 
   defp browsing_slots(_, _, _, _), do: {:error, :invalid_availability}
 
-  defp validate_occupancy(details) do
-    booked_valid =
-      case Map.fetch(details, "booked_slots_on_date") do
-        :error -> true
-        {:ok, value} -> is_list(value)
-      end
-
-    availability_valid =
-      case Map.fetch(details, "slot_availability") do
-        :error ->
-          true
-
-        {:ok, value} when is_list(value) ->
-          Enum.all?(value, fn
-            %{"facility_time_slot_id" => id} -> is_binary(id) or is_integer(id)
-            _ -> false
-          end)
-
-        {:ok, value} ->
-          is_map(value)
-      end
-
-    if booked_valid and availability_valid,
-      do: :ok,
-      else: {:error, :invalid_availability}
+  defp requested_identity(details, requested) do
+    case Map.fetch(details, "facility_id") do
+      :error -> :ok
+      {:ok, ^requested} -> :ok
+      _ -> {:error, :invalid_availability}
+    end
   end
 
-  defp public_slot(slot, raw, bookings_error, courts) do
+  defp public_slot(slot, raw, bookings_error, courts, support) do
     eligibility =
-      if bookings_error,
-        do: %{"status" => "unknown"},
-        else: public_eligibility(Bookings.eligibility(slot, raw), courts)
+      case support do
+        {:error, reason} ->
+          %{"status" => "blocked", "reason" => public_error(reason)["code"]}
+
+        :ok ->
+          if bookings_error,
+            do: %{"status" => "unknown"},
+            else: public_eligibility(Bookings.eligibility(slot, raw), courts)
+      end
 
     %{
       "court_id" => slot.facility_id,
@@ -251,7 +241,7 @@ defmodule Lacuna.Agent do
       "start_time" => Time.to_iso8601(slot.start_time),
       "end_time" => Time.to_iso8601(slot.end_time),
       "slot_id" => scalar(slot.slot_id),
-      "fee_aed" => slot.fee_aed,
+      "fee_aed" => if(support == :ok, do: slot.fee_aed),
       "eligibility" => eligibility
     }
   end
@@ -557,6 +547,18 @@ defmodule Lacuna.Agent do
         :invalid_availability ->
           {"invalid_availability",
            "Availability could not be read safely for this court and date."}
+
+        :unsupported_booking_mode ->
+          {"unsupported_booking_mode",
+           "Only free fixed-slot facilities are supported for booking changes."}
+
+        :paid_facility_unsupported ->
+          {"paid_facility_unsupported",
+           "Chargeable facilities are not supported. Nothing was cancelled."}
+
+        :unknown_facility_price ->
+          {"unknown_facility_price",
+           "The facility could not be verified as free. Nothing was cancelled."}
 
         :existing_booking_changed ->
           {"existing_booking_changed",

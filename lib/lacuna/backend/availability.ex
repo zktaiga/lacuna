@@ -1,237 +1,363 @@
 defmodule Lacuna.Backend.Availability do
   @moduledoc """
-  Pure functions that turn an availability response (per facility, per
-  date) into a list of `%Lacuna.Slot{}` representing the OPEN slots.
+  Shared, fail-closed parsing of provider availability. Optional legacy occupancy
+  fields may be absent, but present malformed fields invalidate the whole cell.
+  Any booked overlap, explicit veto or exhausted capacity closes a slot.
 
-  Two formats the upstream uses:
-
-    * **fixed_time_slots**: a precomputed list of `{start_time, duration}`
-      pairs the facility offers. We subtract `booked_slots_on_date`.
-    * **time-window**: `start_hour:start_min – end_hour:end_min` with a
-      `booking_hrs` granularity. We enumerate the grid and subtract
-      booked slots.
-
-  Returns `[]` for blocked weekdays. Both formats handled.
+  Windowed grids remain readable; mutations support only verified-free fixed
+  slots. Overnight intervals are unsupported and rejected rather than wrapped.
   """
 
   alias Lacuna.Slot
-  require Logger
 
-  @doc "Compute open slots for a facility on a given date from the upstream availability map."
-  @spec open_slots(map(), Date.t(), keyword()) :: [Slot.t()]
-  def open_slots(%{} = details, %Date{} = date, opts \\ []) do
-    details = normalize_availability(details)
-
-    if blocked?(details, date) do
-      []
-    else
-      booked = parse_booked(details)
-
-      grid =
-        grid(details, date, opts)
-        |> Enum.reject(fn {times, id} ->
-          overlaps_any?(times, booked) or unavailable_slot?(details, id)
-        end)
-
-      Enum.map(grid, &slot(&1, details, date))
+  @doc "Validate availability before using it for reads or destructive preflight."
+  @spec validate(term()) :: :ok | {:error, :invalid_availability}
+  def validate(details) do
+    case decode(details) do
+      {:ok, _} -> :ok
+      error -> error
     end
   end
 
-  defp normalize_availability(%{"slot_availability" => entries} = details)
-       when is_list(entries) do
-    by_id =
-      Map.new(entries, fn entry ->
-        {to_string(Map.fetch!(entry, "facility_time_slot_id")), entry}
+  @doc "Validate the shared response and require a supported, verified-free fixed facility."
+  @spec validate_bookable(term()) :: :ok | {:error, atom()}
+  def validate_bookable(details) do
+    with :ok <- validate(details) do
+      cond do
+        not fixed?(details) ->
+          {:error, :unsupported_booking_mode}
+
+        Map.get(details, "is_chargeable") in [true, 1, "1", "true"] ->
+          {:error, :paid_facility_unsupported}
+
+        true ->
+          free_price(details)
+      end
+    end
+  end
+
+  @doc "Compute open slots; invalid responses fail closed. Call validate/1 for coverage errors."
+  @spec open_slots(term(), Date.t(), keyword()) :: [Slot.t()]
+  def open_slots(details, date, opts \\ [])
+
+  def open_slots(details, %Date{} = date, opts) do
+    with {:ok, parsed} <- decode(details),
+         false <- Date.day_of_week(date) in parsed.blocked,
+         {:ok, grid} <- grid(parsed, opts) do
+      grid
+      |> Enum.reject(fn {{st, en}, id} ->
+        Enum.any?(parsed.booked, fn {bs, be} -> st < be and bs < en end) or
+          availability_veto?(Map.get(parsed.availability, id)) or
+          capacity_veto?(Map.get(parsed.capacity, id))
       end)
-
-    Map.put(details, "slot_availability", by_id)
-  end
-
-  defp normalize_availability(details), do: details
-
-  # Missing availability entries retain the legacy overlap-only semantics.
-  # Explicit vetoes and exhausted capacity must agree: either closes the slot.
-  defp unavailable_slot?(%{"slot_availability" => availability}, id)
-       when is_map(availability) and not is_nil(id) do
-    case Map.get(availability, to_string(id)) do
-      %{} = entry ->
-        entry["is_available"] in [false, "false", 0, "0"] or
-          exhausted_capacity?(entry["slots"])
-
-      false ->
-        true
-
-      _ ->
-        false
+      |> Enum.map(&slot(&1, details, date))
+    else
+      _ -> []
     end
   end
 
-  defp unavailable_slot?(_, _), do: false
+  def open_slots(_, _, _), do: []
 
-  defp exhausted_capacity?(n) when is_number(n), do: n <= 0
+  defp decode(details) do
+    {:ok, parse_details(details)}
+  rescue
+    _ -> {:error, :invalid_availability}
+  end
 
-  defp exhausted_capacity?(s) when is_binary(s) do
-    case Integer.parse(s) do
-      {n, ""} -> n <= 0
-      _ -> false
+  defp parse_details(details) when is_map(details) do
+    optional(details, "facility_id", &id!/1, nil)
+    optional(details, "is_facility_fixed_slot_based", &boolean!/1, false)
+    fixed_grid = optional(details, "fixed_time_slots", &fixed_grid!/1, nil)
+
+    if fixed_grid do
+      starts = Enum.map(fixed_grid, fn {{st, _en}, _id} -> st end)
+      ensure!(length(Enum.uniq(starts)) == length(starts))
     end
-  end
 
-  defp exhausted_capacity?(_), do: false
+    granularity = optional(details, "booking_hrs", &positive_integer!/1, 1) * 60
 
-  defp blocked?(%{"blocked_week_days" => blocked}, %Date{} = date) when is_list(blocked) do
-    weekday = day_short(Date.day_of_week(date))
-    Enum.any?(blocked, fn b -> match_weekday?(b, weekday) end)
-  end
+    grid =
+      if fixed?(details) do
+        ensure!(not is_nil(fixed_grid))
+        {:fixed, fixed_grid}
+      else
+        st = clock!(details["start_hour"], Map.get(details, "start_min", 0))
+        en = clock!(details["end_hour"], Map.get(details, "end_min", 0))
+        ensure!(st < en)
+        {:window, st, en, granularity}
+      end
 
-  defp blocked?(_, _), do: false
+    weekdays = optional(details, "week_days", &weekdays!/1, %{})
 
-  defp parse_booked(%{"booked_slots_on_date" => list}) when is_list(list) do
-    Enum.map(list, fn b ->
-      st = parse_time(Map.get(b, "start_time"))
-      duration = duration_minutes(b)
-      en = Time.add(st, duration * 60, :second)
-      {st, en}
-    end)
-  end
-
-  defp parse_booked(_), do: []
-
-  defp duration_minutes(%{"duration" => d}) when is_integer(d), do: d
-  defp duration_minutes(%{"duration" => d}) when is_binary(d), do: String.to_integer(d)
-  defp duration_minutes(_), do: 60
-
-  # The upstream serialises `fixed_time_slots` as a map keyed by slot id
-  # (e.g. `%{"369" => "18:00 - 19:00"}`) when `is_facility_fixed_slot_based`
-  # is true/"1". Each grid entry is `{ {start_time, end_time}, slot_id }`.
-  defp grid(%{"is_facility_fixed_slot_based" => v, "fixed_time_slots" => slots}, _date, _opts)
-       when v in [true, "1"] and is_map(slots) do
-    Enum.map(slots, fn {slot_id, range} ->
-      {st, en} = parse_range(range)
-      {{st, en}, slot_id}
-    end)
-  end
-
-  # Older shape: list of {start_time, duration} pairs.
-  defp grid(%{"is_facility_fixed_slot_based" => v, "fixed_time_slots" => slots}, _date, _opts)
-       when v in [true, "1"] and is_list(slots) do
-    Enum.map(slots, fn s ->
-      st = parse_time(Map.get(s, "start_time"))
-      duration = duration_minutes(s)
-
-      {{st, Time.add(st, duration * 60, :second)},
-       Map.get(s, "id") || Map.get(s, "facility_time_slot_id")}
-    end)
-  end
-
-  defp grid(details, _date, opts) do
-    granularity = Keyword.get(opts, :granularity_minutes, default_granularity(details))
-    start_t = build_time(details["start_hour"], details["start_min"])
-    end_t = build_time(details["end_hour"], details["end_min"])
-    enumerate(start_t, end_t, granularity) |> Enum.map(fn pair -> {pair, nil} end)
-  end
-
-  defp parse_range(s) when is_binary(s) do
-    case String.split(s, ~r/\s*-\s*/, parts: 2) do
-      [a, b] -> {parse_time(a), parse_time(b)}
-      [a] -> {parse_time(a), parse_time(a)}
-    end
-  end
-
-  defp default_granularity(details) do
-    case details["booking_hrs"] do
-      n when is_integer(n) and n > 0 -> n * 60
-      n when is_binary(n) -> max(String.to_integer(n) * 60, 30)
-      _ -> 60
-    end
-  end
-
-  defp enumerate(%Time{} = st, %Time{} = en, minutes) do
-    cond do
-      Time.compare(st, en) in [:gt, :eq] ->
-        []
-
-      true ->
-        next = Time.add(st, minutes * 60, :second)
-
-        if Time.compare(next, en) == :gt,
-          do: [],
-          else: [{st, next} | enumerate(next, en, minutes)]
-    end
-  end
-
-  defp slot({{st, en}, slot_id}, details, %Date{} = date) do
-    facility_name = Map.get(details, "facility_name", "")
-
-    %Slot{
-      facility_id: Map.get(details, "facility_id", facility_name),
-      facility_name: facility_name,
-      date: date,
-      start_time: st,
-      end_time: en,
-      duration_minutes: div(Time.diff(en, st, :second), 60),
-      rate: parse_number(Map.get(details, "facility_rate")),
-      rate_type: Map.get(details, "rate_type"),
-      slot_id: slot_id,
-      fee_aed: parse_number(Map.get(details, "facility_rate")) || 0
+    %{
+      grid: grid,
+      booked: optional(details, "booked_slots_on_date", &booked!/1, []),
+      availability: optional(details, "slot_availability", &availability!/1, %{}),
+      capacity: optional(details, "slots_capacity_details", &capacity!/1, %{}),
+      blocked: optional(details, "blocked_week_days", &blocked!(&1, weekdays), [])
     }
   end
 
-  defp overlaps_any?({st, en}, list),
-    do:
-      Enum.any?(list, fn {bs, be} ->
-        Time.compare(st, be) == :lt and Time.compare(bs, en) == :lt
-      end)
+  defp fixed?(details), do: details["is_facility_fixed_slot_based"] in [true, 1, "1", "true"]
 
-  defp build_time(h, m) when is_integer(h) and is_integer(m), do: Time.new!(h, m, 0)
-  defp build_time(h, m) when is_binary(h), do: build_time(String.to_integer(h), m || 0)
-  defp build_time(h, m) when is_binary(m), do: build_time(h, String.to_integer(m))
-  defp build_time(h, _) when is_integer(h), do: Time.new!(h, 0, 0)
-
-  defp parse_time(nil), do: ~T[00:00:00]
-  defp parse_time(%Time{} = t), do: t
-
-  defp parse_time(s) when is_binary(s) do
-    case Time.from_iso8601(s) do
-      {:ok, t} -> t
-      {:error, _} -> parse_time_loose(s)
+  defp optional(details, key, parser, default) do
+    case Map.fetch(details, key) do
+      :error -> default
+      {:ok, value} -> parser.(value)
     end
   end
 
-  defp parse_time_loose(s) do
-    case String.split(s, ":") do
-      [h, m, _ | _] -> Time.new!(String.to_integer(h), String.to_integer(m), 0)
-      [h, m] -> Time.new!(String.to_integer(h), String.to_integer(m), 0)
-      [h] -> Time.new!(String.to_integer(h), 0, 0)
-      _ -> ~T[00:00:00]
+  defp ensure!(true), do: :ok
+  defp ensure!(_), do: raise(ArgumentError, "invalid availability")
+
+  defp id!(id) when is_integer(id) and id >= 0, do: Integer.to_string(id)
+
+  defp id!(id) when is_binary(id) and byte_size(id) > 0 do
+    ensure!(String.trim(id) == id)
+    id
+  end
+
+  defp integer!(value) when is_integer(value), do: value
+
+  defp integer!(value) when is_binary(value) do
+    {n, ""} = Integer.parse(value)
+    n
+  end
+
+  defp positive_integer!(value) do
+    n = integer!(value)
+    ensure!(n > 0)
+    n
+  end
+
+  defp boolean!(value) when value in [true, 1, "1", "true"], do: true
+  defp boolean!(value) when value in [false, 0, "0", "false"], do: false
+
+  defp time!(%Time{microsecond: {0, _}} = t), do: t.hour * 3600 + t.minute * 60 + t.second
+
+  defp time!(value) when is_binary(value) do
+    ensure!(Regex.match?(~r/^\d{1,2}:\d{2}(:\d{2})?$/, value))
+    [h, m | rest] = String.split(value, ":")
+    t = Time.new!(integer!(h), integer!(m), if(rest == [], do: 0, else: integer!(hd(rest))))
+    time!(t)
+  end
+
+  defp clock!(h, m), do: time!(Time.new!(integer!(h), integer!(m), 0))
+
+  defp interval!(row) when is_map(row) do
+    st = time!(Map.fetch!(row, "start_time"))
+    duration = positive_integer!(Map.fetch!(row, "duration"))
+    en = st + duration * 60
+    ensure!(en < 86_400)
+    {st, en}
+  end
+
+  defp booked!(rows) when is_list(rows), do: Enum.map(rows, &interval!/1)
+
+  defp range!(range) when is_binary(range) do
+    [a, b] = String.split(range, ~r/\s*-\s*/, parts: 2)
+    st = time!(String.trim(a))
+    en = time!(String.trim(b))
+    ensure!(st < en)
+    {st, en}
+  end
+
+  defp fixed_grid!(slots) when is_map(slots) do
+    keyed!(slots, fn key, range -> {id!(key), range!(range)} end)
+    |> Enum.map(fn {id, times} -> {times, id} end)
+  end
+
+  defp fixed_grid!(slots) when is_list(slots) do
+    keyed!(slots, fn row ->
+      id = row_id!(row, "id")
+      {id, interval!(row)}
+    end)
+    |> Enum.map(fn {id, times} -> {times, id} end)
+  end
+
+  defp row_id!(row, primary) when is_map(row) do
+    id = id!(Map.get(row, primary, row["facility_time_slot_id"]))
+
+    if Map.has_key?(row, "facility_time_slot_id"),
+      do: ensure!(id!(row["facility_time_slot_id"]) == id)
+
+    id
+  end
+
+  # Canonicalize IDs before checking duplicates, never silently overwrite vetoes.
+  defp keyed!(entries, parser) do
+    Enum.reduce(entries, %{}, fn entry, acc ->
+      {id, value} =
+        if is_tuple(entry), do: parser.(elem(entry, 0), elem(entry, 1)), else: parser.(entry)
+
+      ensure!(not Map.has_key?(acc, id) or Map.fetch!(acc, id) == value)
+      Map.put(acc, id, value)
+    end)
+  end
+
+  defp availability!(entries) when is_map(entries) do
+    keyed!(entries, fn key, entry ->
+      id = id!(key)
+      {id, availability_entry!(entry, id)}
+    end)
+  end
+
+  defp availability!(entries) when is_list(entries) do
+    keyed!(entries, fn row ->
+      id = row_id!(row, "facility_time_slot_id")
+      {id, availability_entry!(row, id)}
+    end)
+  end
+
+  defp availability_entry!(value, _) when is_boolean(value), do: %{"is_available" => value}
+
+  defp availability_entry!(row, id) when is_map(row) do
+    if Map.has_key?(row, "facility_time_slot_id"),
+      do: ensure!(id!(row["facility_time_slot_id"]) == id)
+
+    ensure!(Map.has_key?(row, "is_available") or Map.has_key?(row, "slots"))
+
+    Enum.reduce([{"is_available", &boolean!/1}, {"slots", &integer!/1}], %{}, fn {key, parser},
+                                                                                 acc ->
+      case Map.fetch(row, key) do
+        :error -> acc
+        {:ok, value} -> Map.put(acc, key, parser.(value))
+      end
+    end)
+  end
+
+  defp availability_veto?(nil), do: false
+
+  defp availability_veto?(row),
+    do: row["is_available"] == false or (Map.has_key?(row, "slots") and row["slots"] <= 0)
+
+  # The live legacy endpoint sends [] when no capacity metadata exists. Nonempty
+  # lists have no established contract and must not become permission to cancel.
+  defp capacity!([]), do: %{}
+
+  defp capacity!(entries) when is_map(entries) do
+    keyed!(entries, fn key, row ->
+      id = id!(key)
+      ensure!(is_map(row))
+      capacity = Map.fetch!(row, "capacity")
+      available = Map.fetch!(row, "available")
+      ensure!(is_integer(capacity) and capacity >= 0 and is_integer(available))
+      optional(row, "slots", fn slots -> ensure!(is_binary(slots)) end, nil)
+      optional(row, "booked", fn booked -> ensure!(is_integer(booked) and booked >= 0) end, nil)
+      optional(row, "facility_time_slot_id", &id!/1, nil)
+      {id, Map.take(row, ["capacity", "available", "slots", "booked"])}
+    end)
+  end
+
+  defp capacity_veto?(nil), do: false
+  defp capacity_veto?(row), do: row["capacity"] > 0 and row["available"] <= 0
+
+  defp weekdays!(rows) when is_list(rows) do
+    keyed!(rows, fn row ->
+      index = Map.fetch!(row, "week_day_index")
+      ensure!(is_integer(index) and index >= 0)
+      day = weekday!(Map.fetch!(row, "week_day_key"))
+      title = weekday!(Map.fetch!(row, "week_day_title"))
+      ensure!(day == title)
+      {Integer.to_string(index), day}
+    end)
+  end
+
+  defp blocked!(rows, weekdays) when is_list(rows),
+    do: Enum.map(rows, &blocked_day!(&1, weekdays))
+
+  defp blocked_day!(%{"day" => day}, weekdays), do: blocked_day!(day, weekdays)
+
+  defp blocked_day!(day, weekdays) when is_binary(day) do
+    case Integer.parse(day) do
+      {_, ""} -> Map.fetch!(weekdays, day)
+      _ -> weekday!(day)
     end
+  end
+
+  defp weekday!(day) when is_binary(day) do
+    case String.downcase(day) do
+      d when d in ["mon", "monday"] -> 1
+      d when d in ["tue", "tuesday"] -> 2
+      d when d in ["wed", "wednesday"] -> 3
+      d when d in ["thu", "thursday"] -> 4
+      d when d in ["fri", "friday"] -> 5
+      d when d in ["sat", "saturday"] -> 6
+      d when d in ["sun", "sunday"] -> 7
+    end
+  end
+
+  defp grid(%{grid: {:fixed, entries}}, _), do: {:ok, entries}
+
+  defp grid(%{grid: {:window, st, en, default}}, opts) do
+    minutes = Keyword.get(opts, :granularity_minutes, default)
+
+    if is_integer(minutes) and minutes > 0 do
+      seconds = minutes * 60
+      count = div(en - st, seconds)
+
+      entries =
+        if count == 0 do
+          []
+        else
+          for i <- 0..(count - 1), do: {{st + i * seconds, st + (i + 1) * seconds}, nil}
+        end
+
+      {:ok, entries}
+    else
+      {:error, :invalid_availability}
+    end
+  end
+
+  defp free_price(details) do
+    chargeable = Map.fetch(details, "is_chargeable")
+    price = Map.fetch(details, "facility_rate")
+
+    cond do
+      chargeable != :error and elem(chargeable, 1) not in [false, 0, "0", "false"] ->
+        {:error, :unknown_facility_price}
+
+      price == :error and chargeable != :error ->
+        :ok
+
+      price != :error and parse_number(elem(price, 1)) == 0 ->
+        :ok
+
+      price != :error and is_number(parse_number(elem(price, 1))) and
+          parse_number(elem(price, 1)) > 0 ->
+        {:error, :paid_facility_unsupported}
+
+      true ->
+        {:error, :unknown_facility_price}
+    end
+  end
+
+  defp slot({{st, en}, slot_id}, details, date) do
+    name = Map.get(details, "facility_name", "")
+
+    %Slot{
+      facility_id: Map.get(details, "facility_id", name),
+      facility_name: name,
+      date: date,
+      start_time: Time.add(~T[00:00:00], st, :second),
+      end_time: Time.add(~T[00:00:00], en, :second),
+      duration_minutes: div(en - st, 60),
+      rate: parse_number(details["facility_rate"]),
+      rate_type: details["rate_type"],
+      slot_id: slot_id,
+      fee_aed:
+        if(free_price(details) == :ok, do: 0, else: parse_number(details["facility_rate"]) || 0)
+    }
   end
 
   defp parse_number(n) when is_number(n), do: n
 
   defp parse_number(s) when is_binary(s) do
     case Float.parse(s) do
-      {n, _} -> n
-      :error -> nil
+      {n, ""} -> n
+      _ -> nil
     end
   end
 
   defp parse_number(_), do: nil
-
-  defp day_short(1), do: "Mon"
-  defp day_short(2), do: "Tue"
-  defp day_short(3), do: "Wed"
-  defp day_short(4), do: "Thu"
-  defp day_short(5), do: "Fri"
-  defp day_short(6), do: "Sat"
-  defp day_short(7), do: "Sun"
-
-  defp match_weekday?(%{"day" => d}, target), do: weekday_eq?(d, target)
-  defp match_weekday?(d, target) when is_binary(d), do: weekday_eq?(d, target)
-  defp match_weekday?(_, _), do: false
-
-  defp weekday_eq?(a, b) when is_binary(a) and is_binary(b),
-    do: String.downcase(String.slice(a, 0, 3)) == String.downcase(String.slice(b, 0, 3))
-
-  defp weekday_eq?(_, _), do: false
 end
