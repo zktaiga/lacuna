@@ -41,6 +41,12 @@ defmodule Lacuna.Backend.Session do
   """
   def configure(email, password), do: GenServer.call(__MODULE__, {:configure, email, password})
 
+  @doc false
+  def operator_fingerprint(email, password) do
+    :crypto.hash(:sha256, :erlang.term_to_binary({email, password}))
+    |> Base.encode16(case: :lower)
+  end
+
   @doc """
   Returns the current logged-in session, logging in on demand. Raises if
   no credentials have been configured.
@@ -98,9 +104,23 @@ defmodule Lacuna.Backend.Session do
   def init(_opts), do: {:ok, %__MODULE__{}}
 
   @impl true
+  def handle_call(
+        {:configure, email, password},
+        _from,
+        %{email: email, password: password} = state
+      ) do
+    {:reply, :ok, state}
+  end
+
   def handle_call({:configure, email, password}, _from, state) do
-    configured = %{state | email: email, password: password, status: :idle}
-    {:reply, :ok, restore_cached_session(configured)}
+    configured = %__MODULE__{email: email, password: password, lease_id: make_ref()}
+
+    if state.email == nil do
+      {:reply, :ok, restore_cached_session(configured)}
+    else
+      clear_cached_session()
+      {:reply, :ok, configured}
+    end
   end
 
   def handle_call(:current!, _from, state) do
@@ -226,7 +246,7 @@ defmodule Lacuna.Backend.Session do
   ## Internal
 
   defp do_login(state) do
-    Logger.info("Logging in to booking backend as #{redact_email(state.email)}")
+    Logger.info("Logging in to configured booking backend")
 
     case API.login(state.email, state.password) do
       {:ok, %{cookie: cookie, comm_id: comm_id, user_id: user_id, uris: uris} = login} ->
@@ -258,7 +278,7 @@ defmodule Lacuna.Backend.Session do
     with path when is_binary(path) and path != "" <- cache_path(),
          {:ok, raw} <- File.read(path),
          {:ok, data} <- Jason.decode(raw),
-         :ok <- cache_context_matches?(data),
+         :ok <- cache_context_matches?(data, state),
          {:ok, logged_in_at} <- parse_cached_time(data["logged_in_at"]),
          true <- cache_fresh?(logged_in_at),
          {:ok, acsession_expires_at} <- parse_optional_cached_time(data["acsession_expires_at"]),
@@ -282,7 +302,9 @@ defmodule Lacuna.Backend.Session do
           last_success_at: last_success_at
       }
     else
-      _ -> state
+      _ ->
+        clear_cached_session()
+        state
     end
   end
 
@@ -291,6 +313,7 @@ defmodule Lacuna.Backend.Session do
     with path when is_binary(path) and path != "" <- cache_path(),
          :ok <- File.mkdir_p(Path.dirname(path)) do
       data = %{
+        operator_fingerprint: operator_fingerprint(state.email, state.password),
         cookie: state.cookie,
         session_id: state.session_id,
         comm_id: state.comm_id,
@@ -325,8 +348,9 @@ defmodule Lacuna.Backend.Session do
 
   defp cache_path, do: Application.get_env(:lacuna, :session_cache_path)
 
-  defp cache_context_matches?(data) do
-    if data["backend_base_url"] == Contract.base_url() and
+  defp cache_context_matches?(data, state) do
+    if data["operator_fingerprint"] == operator_fingerprint(state.email, state.password) and
+         data["backend_base_url"] == Contract.base_url() and
          data["backend_client_package"] == Contract.client_package() and
          data["backend_client_build"] == Contract.client_build() do
       :ok
@@ -383,18 +407,8 @@ defmodule Lacuna.Backend.Session do
     DateTime.diff(DateTime.utc_now(), logged_in_at, :minute) < max_age
   end
 
-  defp log_login_failure(reply, reason) do
-    Logger.error("Login failed: #{inspect(reason)}")
+  defp log_login_failure(reply, _reason) do
+    Logger.error("Booking backend login failed")
     reply
   end
-
-  defp redact_email(email) when is_binary(email) do
-    case String.split(email, "@", parts: 2) do
-      [<<first::binary-size(1), _::binary>>, domain] -> first <> "***@" <> domain
-      [local, domain] when local != "" -> "***@" <> domain
-      _ -> "configured account"
-    end
-  end
-
-  defp redact_email(_), do: "configured account"
 end
