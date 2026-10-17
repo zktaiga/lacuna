@@ -239,12 +239,21 @@ defmodule Lacuna.Backend.Availability do
     keyed!(entries, fn key, row ->
       id = id!(key)
       ensure!(is_map(row))
+
+      if Map.has_key?(row, "facility_time_slot_id"),
+        do: ensure!(id!(row["facility_time_slot_id"]) == id)
+
       capacity = Map.fetch!(row, "capacity")
       available = Map.fetch!(row, "available")
       ensure!(is_integer(capacity) and capacity >= 0 and is_integer(available))
       optional(row, "slots", fn slots -> ensure!(is_binary(slots)) end, nil)
       optional(row, "booked", fn booked -> ensure!(is_integer(booked) and booked >= 0) end, nil)
-      optional(row, "facility_time_slot_id", &id!/1, nil)
+
+      # Zero capacity is no-limit; negative availability already vetoes exhausted slots.
+      # Partial counts need not equal capacity, but cannot exceed its positive bound.
+      if capacity > 0 and available >= 0,
+        do: ensure!(available + Map.get(row, "booked", 0) <= capacity)
+
       {id, Map.take(row, ["capacity", "available", "slots", "booked"])}
     end)
   end

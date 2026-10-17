@@ -126,6 +126,91 @@ defmodule Lacuna.Backend.AvailabilityValidationTest do
     assert [] == Availability.open_slots(details, ~D[2099-05-08])
   end
 
+  test "capacity row identity must match its map key before destructive preflight" do
+    for row_id <- ["b", nil, "", -1, " a ", %{}, []] do
+      details =
+        Map.put(fixed(), "slots_capacity_details", %{
+          "a" => %{"facility_time_slot_id" => row_id, "capacity" => 3, "available" => 0}
+        })
+
+      assert {:error, :invalid_availability} == Availability.validate(details), inspect(row_id)
+      assert {:error, :invalid_availability} == Availability.validate_bookable(details)
+      assert [] == Availability.open_slots(details, ~D[2099-05-08])
+    end
+  end
+
+  test "capacity row identity matches normalized integer and string map keys" do
+    for {key, row_id} <- [{1, "1"}, {"1", 1}, {"a", "a"}] do
+      details =
+        fixed()
+        |> Map.put("fixed_time_slots", %{key => "18:00 - 19:00", "b" => "19:00 - 20:00"})
+        |> Map.put("slots_capacity_details", %{
+          key => %{"facility_time_slot_id" => row_id, "capacity" => 3, "available" => 0}
+        })
+
+      assert :ok == Availability.validate(details)
+      assert :ok == Availability.validate_bookable(details)
+      assert [%{slot_id: "b"}] = Availability.open_slots(details, ~D[2099-05-08])
+    end
+  end
+
+  test "available cannot exceed a positive capacity" do
+    details =
+      Map.put(fixed(), "slots_capacity_details", %{
+        "a" => %{"capacity" => 3, "available" => 4}
+      })
+
+    assert {:error, :invalid_availability} == Availability.validate(details)
+    assert {:error, :invalid_availability} == Availability.validate_bookable(details)
+    assert [] == Availability.open_slots(details, ~D[2099-05-08])
+  end
+
+  test "nonnegative booked and available counts cannot exceed a positive capacity together" do
+    for {available, booked} <- [{0, 4}, {1, 3}, {2, 2}] do
+      details =
+        Map.put(fixed(), "slots_capacity_details", %{
+          "a" => %{"capacity" => 3, "available" => available, "booked" => booked}
+        })
+
+      assert {:error, :invalid_availability} == Availability.validate(details),
+             inspect({available, booked})
+
+      assert {:error, :invalid_availability} == Availability.validate_bookable(details)
+      assert [] == Availability.open_slots(details, ~D[2099-05-08])
+    end
+  end
+
+  test "capacity bounds preserve optional booked counts, no-limit rows and provider exhaustion" do
+    for row <- [
+          %{"capacity" => 3, "available" => 2},
+          %{"capacity" => 3, "available" => 2, "booked" => 0},
+          %{"capacity" => 3, "available" => 2, "booked" => 1},
+          %{"capacity" => 0, "available" => 0},
+          %{"capacity" => 0, "available" => 5, "booked" => 7},
+          %{"capacity" => 0, "available" => -1, "booked" => 7}
+        ] do
+      details = Map.put(fixed(), "slots_capacity_details", %{"a" => row})
+      assert :ok == Availability.validate(details), inspect(row)
+      assert :ok == Availability.validate_bookable(details)
+      assert length(Availability.open_slots(details, ~D[2099-05-08])) == 2
+    end
+
+    for row <- [
+          %{"capacity" => 3, "available" => -1},
+          %{"capacity" => 3, "available" => -1, "booked" => 4}
+        ] do
+      details = Map.put(fixed(), "slots_capacity_details", %{"a" => row})
+      assert :ok == Availability.validate(details)
+      assert :ok == Availability.validate_bookable(details)
+      assert [%{slot_id: "b"}] = Availability.open_slots(details, ~D[2099-05-08])
+    end
+
+    details = Map.put(fixed(), "slots_capacity_details", [])
+    assert :ok == Availability.validate(details)
+    assert :ok == Availability.validate_bookable(details)
+    assert length(Availability.open_slots(details, ~D[2099-05-08])) == 2
+  end
+
   test "malformed capacity metadata fails safe even for unrelated IDs" do
     for value <- [
           nil,
