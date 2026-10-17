@@ -94,13 +94,27 @@ defmodule Lacuna.Backend.SessionTest do
           if n == 1 do
             Plug.Conn.resp(conn, 200, Jason.encode!(app_error(401, "Authentication Required")))
           else
-            Plug.Conn.resp(conn, 200, Jason.encode!(envelope(%{"my_bookings" => %{}})))
+            Plug.Conn.resp(
+              conn,
+              200,
+              Jason.encode!(
+                envelope(%{
+                  "my_bookings" => %{},
+                  "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+                })
+              )
+            )
           end
       end
     end)
 
     session = Session.current!()
-    assert {:ok, %{"my_bookings" => %{}}} = API.my_bookings(session)
+
+    assert {:ok,
+            %{
+              "my_bookings" => %{},
+              "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+            }} = API.my_bookings(session)
 
     assert_receive :login
     assert_receive :dashboard

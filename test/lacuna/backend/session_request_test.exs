@@ -49,7 +49,11 @@ defmodule Lacuna.Backend.SessionRequestTest do
 
     Bypass.expect_once(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
       assert Plug.Conn.get_req_header(conn, "cookie") == [fresh.cookie]
-      reply(conn, %{"my_bookings" => %{}})
+
+      reply(conn, %{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(old)
@@ -66,7 +70,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
     Bypass.expect_once(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
       conn
       |> Plug.Conn.put_resp_header("set-cookie", "aux=new; Path=/")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(old)
@@ -88,7 +95,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
 
       conn
       |> Plug.Conn.put_resp_header("set-cookie", "acsession=obsolete; Path=/")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     task = Task.async(fn -> API.my_bookings(old) end)
@@ -116,7 +126,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
 
       conn
       |> Plug.Conn.put_resp_header("set-cookie", value <> "=present; Path=/")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     a = Task.async(fn -> API.my_bookings(session) end)
@@ -148,7 +161,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
       if Plug.Conn.get_req_header(conn, "cookie") == [rejected.cookie] do
         Plug.Conn.resp(conn, 401, "Authentication Required")
       else
-        reply(conn, %{"my_bookings" => %{}})
+        reply(conn, %{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        })
       end
     end)
 
@@ -173,7 +189,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
 
         Plug.Conn.resp(conn, 401, "Authentication Required")
       else
-        reply(conn, %{"my_bookings" => %{}})
+        reply(conn, %{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        })
       end
     end)
 
@@ -198,7 +217,10 @@ defmodule Lacuna.Backend.SessionRequestTest do
       else
         conn
         |> Plug.Conn.put_resp_header("set-cookie", "acsession=rotated; Path=/")
-        |> reply(%{"my_bookings" => %{}})
+        |> reply(%{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        })
       end
     end)
 
@@ -243,7 +265,11 @@ defmodule Lacuna.Backend.SessionRequestTest do
       assert Plug.Conn.get_req_header(conn, "cookie") == [fresh.cookie]
       assert Plug.Conn.get_req_header(conn, "session-id") == [fresh.session_id]
       assert Plug.Conn.get_req_header(conn, "comm_id") == [fresh.comm_id]
-      reply(conn, %{"my_bookings" => %{}})
+
+      reply(conn, %{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(old)
@@ -290,11 +316,17 @@ defmodule Lacuna.Backend.SessionRequestTest do
 
         conn
         |> Plug.Conn.put_resp_header("set-cookie", "acsession=obsolete; Path=/")
-        |> reply(%{"my_bookings" => %{}})
+        |> reply(%{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        })
       else
         conn
         |> Plug.Conn.put_resp_header("set-cookie", "acsession=rotated; Path=/")
-        |> reply(%{"my_bookings" => %{}})
+        |> reply(%{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        })
       end
     end)
 

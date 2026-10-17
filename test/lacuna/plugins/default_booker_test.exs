@@ -382,7 +382,12 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
     }
   end
 
-  defp bookings(list), do: envelope(%{"my_bookings" => %{"0" => list}})
+  defp bookings(list),
+    do:
+      envelope(%{
+        "my_bookings" => %{"0" => list},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
 
   defp envelope(data) do
     %{

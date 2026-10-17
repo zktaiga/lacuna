@@ -62,7 +62,10 @@ defmodule Lacuna.Backend.SessionCacheTest do
     Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
       conn
       |> Plug.Conn.put_resp_header("set-cookie", "acsession=rotated; Path=/")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(session)
@@ -170,7 +173,10 @@ defmodule Lacuna.Backend.SessionCacheTest do
 
       conn
       |> Plug.Conn.put_resp_header("set-cookie", "acsession=old-account-rotation; Path=/")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     task = Task.async(fn -> API.my_bookings(session) end)

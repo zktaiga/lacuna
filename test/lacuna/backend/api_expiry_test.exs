@@ -97,14 +97,22 @@ defmodule Lacuna.Backend.APIExpiryTest do
     Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
       conn
       |> cookies("acsession=second; Expires=Tue, 20 Oct 2037 07:28:00 GMT")
-      |> reply(%{"my_bookings" => %{}})
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(session)
     assert Session.lease_info().acsession_expires_at == ~U[2037-10-20 07:28:00Z]
 
     Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
-      conn |> cookies("aux=present; Max-Age=1") |> reply(%{"my_bookings" => %{}})
+      conn
+      |> cookies("aux=present; Max-Age=1")
+      |> reply(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
     end)
 
     assert {:ok, _} = API.my_bookings(session)

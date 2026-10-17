@@ -21,7 +21,14 @@ defmodule Lacuna.Backend.APIEnvelopeTest do
       stub(
         bypass,
         "/facilities/m_get_my_bookings_v3",
-        Map.put(envelope(%{"my_bookings" => %{}}), "m_system_status_code", unquote(code))
+        Map.put(
+          envelope(%{
+            "my_bookings" => %{},
+            "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+          }),
+          "m_system_status_code",
+          unquote(code)
+        )
       )
 
       assert {:error, {:upstream_system, unquote(code), _}} = API.my_bookings(nil)
@@ -43,20 +50,38 @@ defmodule Lacuna.Backend.APIEnvelopeTest do
     stub(
       bypass,
       "/facilities/m_get_my_bookings_v3",
-      Map.delete(envelope(%{"my_bookings" => %{}}), "m_system_status_code")
+      Map.delete(
+        envelope(%{
+          "my_bookings" => %{},
+          "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+        }),
+        "m_system_status_code"
+      )
     )
 
-    assert {:ok, %{"my_bookings" => %{}}} = API.my_bookings(nil)
+    assert {:ok,
+            %{
+              "my_bookings" => %{},
+              "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+            }} = API.my_bookings(nil)
   end
 
   test "string success statuses remain supported", %{bypass: bypass} do
     body =
-      envelope(%{"my_bookings" => %{}})
+      envelope(%{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
       |> Map.put("m_system_status_code", "200")
       |> put_in(["m_app_response", "m_app_status_code"], "200")
 
     stub(bypass, "/facilities/m_get_my_bookings_v3", body)
-    assert {:ok, %{"my_bookings" => %{}}} = API.my_bookings(nil)
+
+    assert {:ok,
+            %{
+              "my_bookings" => %{},
+              "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+            }} = API.my_bookings(nil)
   end
 
   test "login system failure stops before dashboard activation", %{bypass: bypass} do

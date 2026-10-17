@@ -363,17 +363,19 @@ defmodule Lacuna.Backend.API do
   defp normalized_booking_status(booking),
     do: booking |> Map.get("status", "") |> to_string() |> String.trim() |> String.downcase()
 
-  @doc "List the user's existing bookings."
+  @doc "List current bookings, exhausting the provider's upcoming-booking pagination."
   @spec my_bookings(map()) :: result()
   def my_bookings(session) do
-    body = URI.encode_query(offset_details: ~s({"offset": 0}), categories: "[]")
+    Lacuna.Backend.BookingPages.collect(fn offsets ->
+      body = URI.encode_query(offset_details: Jason.encode!(offsets), categories: "[]")
 
-    with {:ok, response, _headers} <-
-           request(:post, Contract.endpoint(:my_bookings), body, session_headers(session),
-             session: session
-           ) do
-      unwrap_response(response)
-    end
+      with {:ok, response, _headers} <-
+             request(:post, Contract.endpoint(:my_bookings), body, session_headers(session),
+               session: session
+             ) do
+        unwrap_response(response)
+      end
+    end)
   end
 
   ## Internal
