@@ -141,6 +141,11 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
       bypass,
       &route(&1,
         snapshot_reads: reads,
+        details: %{
+          "is_facility_fixed_slot_based" => "1",
+          "fixed_time_slots" => %{"18" => "19:00 - 20:00"},
+          "is_chargeable" => "0"
+        },
         booking_response: envelope(%{"booking_id" => 34624}),
         bookings_response: bookings([record])
       )
@@ -277,7 +282,7 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
     assert {:error, {:booking_not_confirmed, _}} = DefaultBooker.book(slot, %{})
   end
 
-  test "failed booking reads return the stable confirmation error", %{bypass: bypass, slot: slot} do
+  test "failed pre-creation booking reads stop before creation", %{bypass: bypass, slot: slot} do
     Bypass.expect(
       bypass,
       &route(&1,
@@ -286,7 +291,7 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
       )
     )
 
-    assert {:error, {:booking_not_confirmed, %{}}} = DefaultBooker.book(slot, %{})
+    assert {:error, {:upstream, 503, "Unavailable"}} = DefaultBooker.book(slot, %{})
   end
 
   test "plugin cancellation returns success only after verification", %{bypass: bypass} do
@@ -352,6 +357,16 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
 
       {"POST", "/facilities/m_cancel_booking/"} ->
         Plug.Conn.resp(conn, 200, Jason.encode!(Keyword.fetch!(opts, :cancellation_response)))
+
+      {"POST", "/facilities/m_get_facility_bookings_info"} ->
+        details =
+          Keyword.get(opts, :details, %{
+            "is_facility_fixed_slot_based" => "1",
+            "fixed_time_slots" => %{"slot-1" => "19:00 - 20:00"},
+            "is_chargeable" => "0"
+          })
+
+        Plug.Conn.resp(conn, 200, Jason.encode!(envelope(%{"facility_details" => details})))
 
       {"POST", "/facilities/m_member_make_booking"} ->
         Plug.Conn.resp(conn, 200, Jason.encode!(Keyword.fetch!(opts, :booking_response)))

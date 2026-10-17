@@ -24,32 +24,37 @@ defmodule Lacuna.Plugins.DefaultBooker do
         {:error, {:fee_above_limit, slot.fee_aed, prefs.booking.max_fee_aed}}
 
       true ->
-        session = Session.current!()
+        with %Session{} = session <- Session.current!(),
+             :ok <- booking_unit(session),
+             {:ok, slot} <- Lacuna.Bookings.refresh_slot(slot, session: session),
+             {:ok, _} = before_booking <- API.my_bookings(session) do
+          fields =
+            %{
+              "facility_id" => slot.facility_id,
+              "booking_frequency" => "One Time",
+              "booking_date" => API.format_date(slot.date),
+              "enc_ru_id" => session.ru_id || "",
+              "description" => "",
+              "booking_type" => "0",
+              "is_moderated" => "false"
+            }
+            |> maybe_put_slot_id(slot)
 
-        fields =
-          %{
-            "facility_id" => slot.facility_id,
-            "booking_frequency" => "One Time",
-            "booking_date" => API.format_date(slot.date),
-            "enc_ru_id" => session.ru_id || "",
-            "description" => "",
-            "booking_type" => "0",
-            "is_moderated" => "false"
-          }
-          |> maybe_put_slot_id(slot)
+          case API.make_booking(session, fields) do
+            {:ok, response} ->
+              confirm_booking(session, slot, response, before_booking)
 
-        before_booking = API.my_bookings(session)
-
-        case API.make_booking(session, fields) do
-          {:ok, response} ->
-            Logger.info("Booking response: #{inspect(response, limit: :infinity)}")
-            confirm_booking(session, slot, response, before_booking)
-
-          {:error, _} = err ->
-            err
+            {:error, _} = err ->
+              err
+          end
         end
     end
   end
+
+  defp booking_unit(%Session{ru_id: id}) when is_binary(id) and byte_size(id) > 0,
+    do: :ok
+
+  defp booking_unit(_), do: {:error, :booking_unit_unavailable}
 
   defp maybe_put_slot_id(fields, %Slot{slot_id: nil}), do: fields
   defp maybe_put_slot_id(fields, %Slot{slot_id: ""}), do: fields
