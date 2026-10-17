@@ -496,7 +496,8 @@ defmodule Lacuna.Backend.API do
   # That avoids needless login storms, which matter because a fresh login can
   # invalidate the previous `acsession`.
   defp retry_after_relogin(method, path, body, opts) do
-    with %Lacuna.Backend.Session{} = rejected <- Keyword.get(opts, :session),
+    with true <- retryable_read?(path),
+         %Lacuna.Backend.Session{} = rejected <- Keyword.get(opts, :session),
          false <- Keyword.get(opts, :__retried, false) do
       case Lacuna.Backend.Session.handle_auth_rejection(rejected) do
         {:retry, %Lacuna.Backend.Session{} = fresh} ->
@@ -528,6 +529,19 @@ defmodule Lacuna.Backend.API do
     end
   catch
     :exit, _ -> {:error, :session_unavailable}
+  end
+
+  defp retryable_read?(path) do
+    Enum.any?(
+      [
+        :facility_list,
+        :facility_bookings_info,
+        :facility_rates,
+        :my_bookings,
+        :facility_charge_data
+      ],
+      &(Contract.endpoint(&1) == path)
+    )
   end
 
   defp retry_with_session(method, path, body, opts, fresh) do

@@ -42,6 +42,60 @@ defmodule Lacuna.Backend.SessionRequestTest do
     %{bypass: bypass, count: count}
   end
 
+  for operation <- [:create, :cancel], rejection <- [:http, :application, :system] do
+    test "#{operation} mutation is never replayed after #{rejection} authentication rejection",
+         ctx do
+      assert_never_replayed(ctx, unquote(operation), unquote(rejection))
+    end
+  end
+
+  defp assert_never_replayed(%{bypass: bypass, count: count}, operation, rejection) do
+    session = Session.current!()
+
+    path =
+      if operation == :create,
+        do: "/facilities/m_member_make_booking",
+        else: "/facilities/m_cancel_booking/"
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      reply(conn, %{
+        "my_bookings" => %{},
+        "offset_details" => %{"upcoming_offset" => -1, "past_offset" => -1}
+      })
+    end)
+
+    Bypass.expect_once(bypass, "POST", path, fn conn ->
+      case rejection do
+        :http ->
+          Plug.Conn.resp(conn, 401, "Unauthorized")
+
+        :application ->
+          Plug.Conn.resp(
+            conn,
+            200,
+            Jason.encode!(%{
+              "m_system_status_code" => 200,
+              "m_app_response" => %{
+                "m_app_status_code" => 401,
+                "m_app_status_msg" => "Unauthorized"
+              }
+            })
+          )
+
+        :system ->
+          Plug.Conn.resp(conn, 200, Jason.encode!(%{"m_system_status_code" => 401}))
+      end
+    end)
+
+    result =
+      if operation == :create,
+        do: API.make_booking(session, %{"facility_id" => "synthetic-court"}),
+        else: API.cancel_booking(session, "synthetic-booking")
+
+    assert {:error, _} = result
+    assert Agent.get(count, & &1) == 1
+  end
+
   test "a stale workflow sends the current lease without restoring its old jar", %{bypass: bypass} do
     old = Session.current!()
     Session.invalidate()
