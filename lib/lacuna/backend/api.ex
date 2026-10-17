@@ -44,8 +44,12 @@ defmodule Lacuna.Backend.API do
            ),
          {:ok, login_data} <- parse_login_response(response, login_headers),
          {:ok, activated} <- activate_session(login_data),
-         {:ok, with_ru} <- attach_ru_id(activated) do
+         {:ok, with_ru} <- attach_ru_id(activated),
+         true <- valid_auth_cookie?(with_ru.cookie) do
       {:ok, with_ru}
+    else
+      false -> {:error, :login_missing_auth_cookie}
+      {:error, _} = error -> error
     end
   end
 
@@ -54,17 +58,13 @@ defmodule Lacuna.Backend.API do
   defp activate_session(%{cookie: cookie} = login_data) when is_binary(cookie) and cookie != "" do
     headers = [{"Cookie", cookie}] ++ Contract.static_headers()
 
-    case request(:post, Contract.endpoint(:dashboard), "", headers, session: nil) do
-      {:ok, _response, dashboard_headers} ->
-        merged_cookie = merge_cookies(cookie, dashboard_headers)
-
-        {:ok,
-         login_data
-         |> Map.put(:cookie, merged_cookie)
-         |> put_cookie_expiry(dashboard_headers)}
-
-      {:error, _} = err ->
-        err
+    with {:ok, response, dashboard_headers} <-
+           request(:post, Contract.endpoint(:dashboard), "", headers, session: nil),
+         {:ok, _} <- unwrap_response(response) do
+      {:ok,
+       login_data
+       |> Map.put(:cookie, merge_cookies(cookie, dashboard_headers))
+       |> put_cookie_expiry(dashboard_headers)}
     end
   end
 
@@ -73,26 +73,14 @@ defmodule Lacuna.Backend.API do
   defp attach_ru_id(%{cookie: cookie} = login_data) when is_binary(cookie) and cookie != "" do
     headers = [{"Cookie", cookie}] ++ Contract.static_headers()
 
-    case request(:post, Contract.endpoint(:member_ru_details), "", headers, session: nil) do
-      {:ok, response, ru_headers} ->
-        merged_cookie = merge_cookies(cookie, ru_headers)
-
-        ru_id =
-          response
-          |> unwrap_response()
-          |> case do
-            {:ok, data} -> find_ru_id(data)
-            _ -> nil
-          end
-
-        {:ok,
-         login_data
-         |> Map.put(:cookie, merged_cookie)
-         |> Map.put(:ru_id, ru_id)
-         |> put_cookie_expiry(ru_headers)}
-
-      {:error, _} ->
-        {:ok, Map.put(login_data, :ru_id, nil)}
+    with {:ok, response, ru_headers} <-
+           request(:post, Contract.endpoint(:member_ru_details), "", headers, session: nil),
+         {:ok, data} <- unwrap_response(response) do
+      {:ok,
+       login_data
+       |> Map.put(:cookie, merge_cookies(cookie, ru_headers))
+       |> Map.put(:ru_id, find_ru_id(data))
+       |> put_cookie_expiry(ru_headers)}
     end
   end
 
@@ -558,6 +546,10 @@ defmodule Lacuna.Backend.API do
 
   defp decode(other), do: {:ok, other}
 
+  defp unwrap_response(%{"m_system_status_code" => code} = envelope)
+       when code not in [200, "200"],
+       do: {:error, {:upstream_system, code, Map.get(envelope, "m_system_status_msg")}}
+
   defp unwrap_response(%{
          "m_app_response" => %{"m_app_status_code" => code, "m_response_data" => nil}
        })
@@ -587,33 +579,42 @@ defmodule Lacuna.Backend.API do
 
   defp unwrap_response(other), do: {:error, {:envelope_unexpected, other}}
 
-  defp parse_login_response(
-         %{"m_app_response" => %{"m_app_status_code" => code, "m_response_data" => data}},
-         headers
-       )
-       when code in [200, "200"] do
-    cookie = build_cookie_header(headers)
+  defp parse_login_response(envelope, headers) do
+    with {:ok, parsed} <- unwrap_response(envelope) do
+      case parsed do
+        %{"comm_id" => comm_id, "user_id" => user_id}
+        when is_binary(comm_id) and comm_id != "" and is_binary(user_id) and user_id != "" ->
+          cookie = build_cookie_header(headers)
 
-    case Jason.decode(data) do
-      {:ok, %{"comm_id" => comm_id, "user_id" => user_id} = parsed} ->
-        {:ok,
-         %{
-           cookie: cookie,
-           acsession_expires_at: cookie_expires_at(headers),
-           comm_id: comm_id,
-           user_id: user_id,
-           uris: Map.get(parsed, "uris", [])
-         }}
+          if valid_auth_cookie?(cookie) do
+            {:ok,
+             %{
+               cookie: cookie,
+               acsession_expires_at: cookie_expires_at(headers),
+               comm_id: comm_id,
+               user_id: user_id,
+               uris: Map.get(parsed, "uris", [])
+             }}
+          else
+            {:error, :login_missing_auth_cookie}
+          end
 
-      {:ok, parsed} ->
-        {:error, {:login_unexpected, parsed}}
-
-      {:error, _} ->
-        {:error, {:login_decode, data}}
+        _ ->
+          {:error, {:login_unexpected, parsed}}
+      end
     end
   end
 
-  defp parse_login_response(envelope, _headers), do: {:error, {:login_envelope, envelope}}
+  defp valid_auth_cookie?(cookie) do
+    cookie
+    |> String.split(";")
+    |> Enum.any?(fn pair ->
+      case pair |> String.trim() |> String.split("=", parts: 2) do
+        ["acsession", value] -> String.trim(value) != ""
+        _ -> false
+      end
+    end)
+  end
 
   # The upstream sets multiple Set-Cookie values (acsession + PHPSESSID at
   # least). Authenticated calls need every name=value pair joined with "; ".
