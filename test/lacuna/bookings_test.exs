@@ -89,6 +89,27 @@ defmodule Lacuna.BookingsTest do
     %{pid: pid, slot: slot(), opts: [api: Backend, session: pid, booker: Booker]}
   end
 
+  defmodule UnitlessBackend do
+    def my_bookings(_), do: {:ok, %{"my_bookings" => %{"0" => [Lacuna.BookingsTest.booking()]}}}
+
+    def facility_availability(_, _, _),
+      do:
+        {:ok,
+         %{
+           "facility_id" => "court-a",
+           "is_facility_fixed_slot_based" => "1",
+           "is_chargeable" => "0",
+           "fixed_time_slots" => %{"slot-18" => "18:00 - 19:00"}
+         }}
+
+    def cancel_booking(_, _), do: raise("cancellation must not be reached without a booking unit")
+  end
+
+  test "missing unit is rejected before replacement can cancel", %{slot: slot} do
+    opts = [api: UnitlessBackend, session: %Lacuna.Backend.Session{ru_id: nil}]
+    assert {:error, :booking_unit_unavailable} = Bookings.replace(slot, "old", %{}, opts)
+  end
+
   test "a reservation blocks only its court and identifies an already-held slot", %{slot: slot} do
     old = booking()
     assert {:replacement_required, ^old} = Bookings.eligibility(slot, [old])

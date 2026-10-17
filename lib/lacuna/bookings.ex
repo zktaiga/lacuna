@@ -110,8 +110,10 @@ defmodule Lacuna.Bookings do
 
   def refresh_slot(%Slot{} = slot, opts \\ []) do
     with :ok <- future_slot(slot),
+         session <- session(opts),
+         :ok <- booking_unit(session),
          {:ok, details} <-
-           api(opts).facility_availability(session(opts), slot.facility_id, slot.date),
+           api(opts).facility_availability(session, slot.facility_id, slot.date),
          :ok <- Availability.validate(details),
          {:ok, details} <- bind_facility(details, slot.facility_id),
          :ok <- Availability.validate_bookable(details) do
@@ -129,6 +131,12 @@ defmodule Lacuna.Bookings do
       end
     end
   end
+
+  defp booking_unit(%Session{ru_id: id}),
+    do: if(normalize_id(id) != nil, do: :ok, else: {:error, :booking_unit_unavailable})
+
+  defp booking_unit({:error, _} = error), do: error
+  defp booking_unit(_injected_backend_session), do: :ok
 
   defp bind_facility(details, requested_id) do
     case Map.fetch(details, "facility_id") do
