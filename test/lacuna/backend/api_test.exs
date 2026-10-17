@@ -16,6 +16,19 @@ defmodule Lacuna.Backend.APITest do
     %{bypass: bypass}
   end
 
+  test "incomplete inventory stops cancellation before the provider write", %{bypass: bypass} do
+    Bypass.expect_once(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      Plug.Conn.resp(conn, 200, Jason.encode!(envelope(%{"my_bookings" => %{}})))
+    end)
+
+    Bypass.stub(bypass, "POST", "/facilities/m_cancel_booking/", fn conn ->
+      flunk("incomplete inventory must not reach a cancellation request")
+      conn
+    end)
+
+    assert {:error, :incomplete_bookings} = API.cancel_booking(nil, "booking-1")
+  end
+
   test "HTTP 200 cancellation app failures are errors", %{bypass: bypass} do
     serve(bypass, [bookings([active()])], app_error())
     assert {:error, {:upstream, 409, "Cannot cancel"}} = API.cancel_booking(nil, "booking-1")

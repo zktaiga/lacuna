@@ -314,7 +314,8 @@ defmodule Lacuna.Backend.API do
     before_cancel = my_bookings(session)
     body = URI.encode_query(booking_id: booking_id)
 
-    with {:ok, response, _headers} <-
+    with {:ok, _} <- before_cancel,
+         {:ok, response, _headers} <-
            request(:post, Contract.endpoint(:cancel_booking), body, session_headers(session),
              session: session
            ),
