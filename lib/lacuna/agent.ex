@@ -541,6 +541,22 @@ defmodule Lacuna.Agent do
         :courts_unavailable ->
           {"courts_unavailable", "The configured court catalog is unavailable."}
 
+        :incomplete_bookings ->
+          {"incomplete_bookings",
+           "The provider did not return a complete booking inventory. Nothing was changed."}
+
+        :inconsistent_bookings ->
+          {"inconsistent_bookings",
+           "The provider returned conflicting booking records. Nothing was changed."}
+
+        :availability_identity_mismatch ->
+          {"availability_identity_mismatch",
+           "Availability did not match the requested court. Nothing was changed."}
+
+        :booking_unit_unavailable ->
+          {"booking_unit_unavailable",
+           "The booking unit could not be verified. Nothing was changed."}
+
         :invalid_bookings ->
           {"invalid_bookings", "Current bookings could not be read safely."}
 

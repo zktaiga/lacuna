@@ -267,6 +267,31 @@ defmodule Lacuna.Bookings do
     do:
       "Cancellation could not be confirmed. The replacement was not attempted; check /bookings before retrying."
 
+  def error_text(:incomplete_bookings),
+    do: "The provider did not return all current bookings. Nothing was changed; retry the read."
+
+  def error_text(:inconsistent_bookings),
+    do:
+      "The provider returned conflicting booking records. Nothing was changed; review /bookings."
+
+  def error_text(:availability_identity_mismatch),
+    do: "Availability did not match the requested court. Nothing was changed."
+
+  def error_text(:invalid_availability),
+    do: "Availability could not be read safely. Nothing was changed."
+
+  def error_text(:unsupported_booking_mode),
+    do: "Only free fixed-slot facilities are supported. Nothing was changed."
+
+  def error_text(:paid_facility_unsupported),
+    do: "Chargeable facilities are not supported. Nothing was changed."
+
+  def error_text(:unknown_facility_price),
+    do: "This facility could not be verified as free. Nothing was changed."
+
+  def error_text(:booking_unit_unavailable),
+    do: "The booking unit could not be verified. Nothing was changed."
+
   def error_text(:invalid_bookings),
     do: "Existing bookings could not be read safely. Nothing was changed."
 

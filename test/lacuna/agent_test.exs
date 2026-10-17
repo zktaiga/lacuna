@@ -85,6 +85,15 @@ defmodule Lacuna.AgentTest do
     %{pid: pid, opts: opts}
   end
 
+  for reason <- [:incomplete_bookings, :inconsistent_bookings] do
+    test "inventory error #{reason} remains actionable and read only", %{pid: pid, opts: opts} do
+      Agent.update(pid, &%{&1 | read_error: {:error, unquote(reason)}})
+      assert %{"ok" => false, "error" => %{"code" => code}} = call("bookings", %{}, opts)
+      assert code == unquote(Atom.to_string(reason))
+      assert Agent.get(pid, & &1.calls) == [:bookings]
+    end
+  end
+
   test "fresh availability includes held slots, ownership, requested IDs and coverage", %{
     pid: pid,
     opts: opts

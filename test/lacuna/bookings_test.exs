@@ -161,7 +161,9 @@ defmodule Lacuna.BookingsTest do
 
   test "malformed occupancy cannot manufacture a held browsing slot", %{pid: pid, slot: slot} do
     details = Agent.get(pid, & &1.availability) |> Map.put("slots_capacity_details", nil)
-    assert Bookings.browsing_slots(details, slot.date, [booking("mine", "court-a", "18:00")]) == []
+
+    assert Bookings.browsing_slots(details, slot.date, [booking("mine", "court-a", "18:00")]) ==
+             []
   end
 
   test "malformed bookings fail closed without writes", %{pid: pid, slot: slot, opts: opts} do
