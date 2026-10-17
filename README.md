@@ -73,6 +73,40 @@ Replacement shows the current and target reservations and requires explicit conf
 
 The provider remains authoritative. A household booking held by another account may be invisible to this bot; the bot reports that limit rather than guessing which booking to cancel. HTTP success alone does not confirm cancellation or booking creation, and explicit unavailable-slot flags are respected.
 
+## agent tools (MCP)
+
+The local stdio adapter in `integrations/mcp` exposes five ordinary tools:
+
+- `availability` — court slots over a date range, including held slots, booking eligibility and read coverage.
+- `bookings` — upcoming reservations visible to the configured operator.
+- `book` — reserve an exact slot without cancelling anything.
+- `replace` — explicitly cancel the named existing reservation and attempt the exact replacement.
+- `cancel` — cancel the named reservation after checking its expected details.
+
+The adapter calls the running `lacuna` container through release RPC. It reuses
+Lacuna's session and booking implementation; no extra provider login or network
+listener is needed. Install `uv` and make sure your user can access Docker, then
+from this checkout:
+
+```sh
+uv sync --locked --directory integrations/mcp
+hermes mcp add lacuna --command "$(command -v uv)" --args run --locked --directory "$PWD/integrations/mcp" python server.py
+hermes mcp test lacuna
+```
+
+Use `/reload-mcp` or a fresh Hermes session after registration. The running
+Lacuna image must include `Lacuna.Agent`; deploy this source before calling the
+tools. Set `LACUNA_CONTAINER` for a different container name.
+
+Ask the agent to read slots and existing bookings, propose concrete changes,
+and wait for approval. Mutation tools require `confirmed: true` only after the
+user has approved those exact actions; this argument is a safety check, not an
+authentication mechanism. The agent does the scheduling itself: there is no
+optimizer or planning engine. Policy metadata describes Lacuna's local guard,
+not a verified universal provider quota; the backend remains authoritative.
+Replacement can lose the original reservation, and a failed multi-step plan
+must stop for review rather than silently substitute another slot.
+
 ## session handling
 
 sessions are managed as a sliding `acsession` lease. login is followed by the dashboard activation call required by the backend, then a residential-unit lookup. authenticated requests send the minimal probed auth header (`Cookie: acsession=...`) by default, persist cookie expiry metadata, touch the lease shortly before expiry, and recover from HTTP/app-envelope 401 with a serialized single relogin. Set `LACUNA_AUTH_HEADER_MODE=full` if a future endpoint proves it needs the wider mobile-like header set.

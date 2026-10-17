@@ -8,3 +8,6 @@ priv/recon
 test
 *.tar
 .elixir_ls
+integrations/mcp/.venv
+**/__pycache__
+.pytest_cache

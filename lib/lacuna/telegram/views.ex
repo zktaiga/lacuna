@@ -75,7 +75,7 @@ defmodule Lacuna.Telegram.Views do
     %ExGram.Model.InlineKeyboardButton{
       text:
         "#{court_label(slot.facility_name)} · #{if Keyword.get(opts, :show_time, true), do: format_time(slot.start_time) <> " · ", else: ""}#{label}",
-      callback_data: "book:" <> Slot.key(slot)
+      callback_data: "book:" <> Lacuna.Telegram.BookingKey.encode(slot)
     }
   end
 

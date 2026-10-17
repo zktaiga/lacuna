@@ -29,3 +29,9 @@ session.dat
 # Local dev caches
 .elixir_ls/
 .DS_Store
+
+# Local MCP adapter caches
+/integrations/mcp/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/

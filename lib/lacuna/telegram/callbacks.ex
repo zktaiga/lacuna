@@ -312,22 +312,22 @@ defmodule Lacuna.Telegram.Callbacks do
   defp do_book(cq, slot_key) do
     show_booking_in_progress(cq)
 
-    case String.split(slot_key, "|") do
-      [facility_id, date_iso, time_iso] ->
-        with {:ok, date} <- Date.from_iso8601(date_iso),
-             {:ok, time} <- Time.from_iso8601(time_iso),
-             {:ok, %Slot{} = slot} <- rebuild_slot(facility_id, date, time) do
-          result = Bookings.book(slot, %{actor: cq.from})
-          reply_book(cq, slot, result)
-          {:ack, ack_text(result)}
-        else
-          {:error, reason} ->
-            edit_message(cq, "❌ Slot no longer fetchable: `#{trunc_inspect(reason)}`")
-            {:ack, "Failed", true}
+    with {:ok, facility_id, date, time} <- Lacuna.Telegram.BookingKey.decode(slot_key),
+         {:ok, %Slot{} = slot} <- rebuild_slot(facility_id, date, time) do
+      result = Bookings.book(slot, %{actor: cq.from})
+      reply_book(cq, slot, result)
+      {:ack, ack_text(result)}
+    else
+      {:error, :invalid_slot_key} ->
+        edit_message(cq, "This court button is no longer valid. Reopen /free to refresh it.",
+          reply_markup: menu_keyboard()
+        )
 
-          _ ->
-            {:ack, "Bad slot key", true}
-        end
+        {:ack, "Refresh /free", true}
+
+      {:error, reason} ->
+        edit_message(cq, "❌ Slot no longer fetchable: `#{trunc_inspect(reason)}`")
+        {:ack, "Failed", true}
 
       _ ->
         {:ack, "Bad slot key", true}

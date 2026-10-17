@@ -69,6 +69,24 @@ defmodule Lacuna.Backend.AvailabilityTest do
              ["c", "d"]
   end
 
+  test "list-shaped provider vetoes and capacity use slot IDs" do
+    details = %{
+      "is_facility_fixed_slot_based" => true,
+      "fixed_time_slots" => %{
+        "1" => "18:00 - 19:00",
+        "2" => "19:00 - 20:00",
+        "3" => "20:00 - 21:00"
+      },
+      "slot_availability" => [
+        %{"facility_time_slot_id" => 1, "is_available" => false},
+        %{"facility_time_slot_id" => 2, "is_available" => true, "slots" => 0},
+        %{"facility_time_slot_id" => 3, "is_available" => true, "slots" => 1}
+      ]
+    }
+
+    assert Enum.map(Availability.open_slots(details, ~D[2099-05-08]), & &1.slot_id) == ["3"]
+  end
+
   test "explicit available flag never overrides booking overlaps" do
     details = %{
       "is_facility_fixed_slot_based" => true,

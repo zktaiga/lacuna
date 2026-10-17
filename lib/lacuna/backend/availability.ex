@@ -20,6 +20,8 @@ defmodule Lacuna.Backend.Availability do
   @doc "Compute open slots for a facility on a given date from the upstream availability map."
   @spec open_slots(map(), Date.t(), keyword()) :: [Slot.t()]
   def open_slots(%{} = details, %Date{} = date, opts \\ []) do
+    details = normalize_availability(details)
+
     if blocked?(details, date) do
       []
     else
@@ -34,6 +36,18 @@ defmodule Lacuna.Backend.Availability do
       Enum.map(grid, &slot(&1, details, date))
     end
   end
+
+  defp normalize_availability(%{"slot_availability" => entries} = details)
+       when is_list(entries) do
+    by_id =
+      Map.new(entries, fn entry ->
+        {to_string(Map.fetch!(entry, "facility_time_slot_id")), entry}
+      end)
+
+    Map.put(details, "slot_availability", by_id)
+  end
+
+  defp normalize_availability(details), do: details
 
   # Missing availability entries retain the legacy overlap-only semantics.
   # Explicit vetoes and exhausted capacity must agree: either closes the slot.
