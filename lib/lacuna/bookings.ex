@@ -111,20 +111,51 @@ defmodule Lacuna.Bookings do
   def refresh_slot(%Slot{} = slot, opts \\ []) do
     with :ok <- future_slot(slot),
          {:ok, details} <-
-           api(opts).facility_availability(session(opts), slot.facility_id, slot.date) do
+           api(opts).facility_availability(session(opts), slot.facility_id, slot.date),
+         :ok <- Availability.validate(details),
+         {:ok, details} <- bind_facility(details, slot.facility_id),
+         :ok <- Availability.validate_bookable(details) do
       details
-      |> Map.put_new("facility_id", slot.facility_id)
       |> Availability.open_slots(slot.date)
-      |> Enum.find(
-        &(Time.compare(&1.start_time, slot.start_time) == :eq and
+      |> Enum.filter(
+        &(same_id?(&1.facility_id, slot.facility_id) and
+            (slot.slot_id == nil or same_id?(&1.slot_id, slot.slot_id)) and
+            Time.compare(&1.start_time, slot.start_time) == :eq and
             Time.compare(&1.end_time, slot.end_time) == :eq)
       )
       |> case do
-        nil -> {:error, :slot_no_longer_open}
-        fresh -> {:ok, fresh}
+        [fresh] -> {:ok, fresh}
+        _ -> {:error, :slot_no_longer_open}
       end
     end
   end
+
+  defp bind_facility(details, requested_id) do
+    case Map.fetch(details, "facility_id") do
+      :error ->
+        if normalize_id(requested_id) != nil,
+          do: {:ok, Map.put(details, "facility_id", requested_id)},
+          else: {:error, :invalid_availability}
+
+      {:ok, id} ->
+        if normalize_id(id) != nil and same_id?(id, requested_id),
+          do: {:ok, details},
+          else: {:error, :invalid_availability}
+    end
+  end
+
+  defp same_id?(nil, nil), do: true
+
+  defp same_id?(left, right),
+    do: normalize_id(left) != nil and normalize_id(left) == normalize_id(right)
+
+  defp normalize_id(id) when is_integer(id), do: Integer.to_string(id)
+
+  defp normalize_id(id) when is_binary(id) do
+    if id != "" and String.trim(id) == id, do: id, else: nil
+  end
+
+  defp normalize_id(_), do: nil
 
   def snapshot(booking),
     do:

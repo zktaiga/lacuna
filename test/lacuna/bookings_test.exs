@@ -78,6 +78,7 @@ defmodule Lacuna.BookingsTest do
                "facility_id" => "court-a",
                "facility_name" => "Court A",
                "is_facility_fixed_slot_based" => "1",
+               "is_chargeable" => "0",
                "fixed_time_slots" => %{"slot-18" => "18:00 - 19:00"},
                "booked_slots_on_date" => []
              }
@@ -162,6 +163,206 @@ defmodule Lacuna.BookingsTest do
     assert {:error, :invalid_bookings} = Bookings.book(slot, %{test_pid: pid}, opts)
     assert {:error, :invalid_bookings} = Bookings.replace(slot, "old", %{test_pid: pid}, opts)
     assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_bookings]
+  end
+
+  for {field, value} <- [
+        {"slot_availability", "invalid"},
+        {"slot_availability", %{"slot-18" => %{"is_available" => "unknown"}}},
+        {"booked_slots_on_date", "invalid"},
+        {"booked_slots_on_date", [%{"start_time" => "not-a-time", "duration" => 60}]}
+      ] do
+    test "invalid availability #{field}=#{inspect(value)} prevents replacement writes", %{
+      pid: pid,
+      slot: slot,
+      opts: opts
+    } do
+      Agent.update(
+        pid,
+        &%{
+          &1
+          | availability: Map.put(&1.availability, unquote(field), unquote(Macro.escape(value)))
+        }
+      )
+
+      assert {:error, :invalid_availability} =
+               Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+
+      assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+      assert Agent.get(pid, & &1.bookings) == [booking()]
+    end
+  end
+
+  test "non-map availability fails closed before replacement writes", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(pid, &%{&1 | availability: nil})
+    assert {:error, :invalid_availability} = Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+    assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+    assert Agent.get(pid, & &1.bookings) == [booking()]
+  end
+
+  for {field, value} <- [
+        {"is_chargeable", true},
+        {"is_chargeable", 1},
+        {"is_chargeable", "1"},
+        {"facility_rate", 25}
+      ] do
+    test "fresh unsupported pricing #{field}=#{inspect(value)} prevents cancellation", %{
+      pid: pid,
+      slot: slot,
+      opts: opts
+    } do
+      Agent.update(
+        pid,
+        &%{&1 | availability: Map.put(&1.availability, unquote(field), unquote(value))}
+      )
+
+      assert {:error, _} = Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+      assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+      assert Agent.get(pid, & &1.bookings) == [booking()]
+    end
+  end
+
+  test "unknown fresh pricing prevents cancellation", %{pid: pid, slot: slot, opts: opts} do
+    Agent.update(pid, &%{&1 | availability: Map.delete(&1.availability, "is_chargeable")})
+    assert {:error, _} = Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+    assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+    assert Agent.get(pid, & &1.bookings) == [booking()]
+  end
+
+  test "ordinary booking also validates fresh availability before invoking a booker", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(
+      pid,
+      &%{
+        &1
+        | bookings: [],
+          availability: Map.put(&1.availability, "booked_slots_on_date", "invalid")
+      }
+    )
+
+    assert {:error, :invalid_availability} = Bookings.book(slot, %{test_pid: pid}, opts)
+    assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+  end
+
+  for id <- ["court-b", nil, "", false, %{"id" => "court-a"}] do
+    test "availability facility identity #{inspect(id)} cannot redirect an approved replacement",
+         %{
+           pid: pid,
+           slot: slot,
+           opts: opts
+         } do
+      Agent.update(
+        pid,
+        &%{&1 | availability: Map.put(&1.availability, "facility_id", unquote(Macro.escape(id)))}
+      )
+
+      assert {:error, :invalid_availability} =
+               Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+
+      assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+      assert Agent.get(pid, & &1.bookings) == [booking()]
+    end
+  end
+
+  test "absent availability facility ID is bound to the requested court", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(pid, &%{&1 | availability: Map.delete(&1.availability, "facility_id")})
+    assert {:ok, %{slot: fresh}} = Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+    assert fresh.facility_id == "court-a"
+    assert fresh.slot_id == "slot-18"
+  end
+
+  test "four-field agent targets bind the unique fresh slot ID", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(pid, &%{&1 | bookings: []})
+    assert {:ok, %{slot: fresh}} = Bookings.book(%{slot | slot_id: nil}, %{test_pid: pid}, opts)
+    assert fresh.slot_id == "slot-18"
+    assert fresh.facility_id == "court-a"
+  end
+
+  test "an unbound target cannot select between duplicate fresh slot identities", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(
+      pid,
+      &%{
+        &1
+        | availability:
+            Map.put(&1.availability, "fixed_time_slots", %{
+              "one" => "18:00 - 19:00",
+              "two" => "18:00 - 19:00"
+            })
+      }
+    )
+
+    assert {:error, _} =
+             Bookings.replace(%{slot | slot_id: nil}, "old", %{test_pid: pid}, opts)
+
+    assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+    assert Agent.get(pid, & &1.bookings) == [booking()]
+  end
+
+  test "equivalent integer and string IDs keep the fresh provider identity", %{
+    pid: pid,
+    slot: slot,
+    opts: opts
+  } do
+    Agent.update(
+      pid,
+      &%{
+        &1
+        | bookings: [],
+          availability:
+            &1.availability
+            |> Map.put("facility_id", 42)
+            |> Map.put("fixed_time_slots", %{18 => "18:00 - 19:00"})
+      }
+    )
+
+    assert {:ok, %{slot: fresh}} =
+             Bookings.book(%{slot | facility_id: "42", slot_id: "18"}, %{test_pid: pid}, opts)
+
+    assert fresh.facility_id == 42
+    assert to_string(fresh.slot_id) == "18"
+  end
+
+  for {field, value} <- [
+        {"fixed_time_slots", %{"different-slot" => "18:00 - 19:00"}},
+        {"fixed_time_slots", %{"slot-18" => "18:00 - 20:00"}}
+      ] do
+    test "fresh target #{inspect(value)} cannot change the approved slot identity", %{
+      pid: pid,
+      slot: slot,
+      opts: opts
+    } do
+      Agent.update(
+        pid,
+        &%{
+          &1
+          | availability: Map.put(&1.availability, unquote(field), unquote(Macro.escape(value)))
+        }
+      )
+
+      assert {:error, :slot_no_longer_open} =
+               Bookings.replace(slot, "old", %{test_pid: pid}, opts)
+
+      assert Agent.get(pid, & &1.calls) == [:read_bookings, :read_availability]
+      assert Agent.get(pid, & &1.bookings) == [booking()]
+    end
   end
 
   test "past and rejected records do not block a court", %{slot: slot} do
