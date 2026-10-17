@@ -61,7 +61,7 @@ defmodule Lacuna.Backend.API do
         {:ok,
          login_data
          |> Map.put(:cookie, merged_cookie)
-         |> put_newer_expiry(cookie_expires_at(dashboard_headers))}
+         |> put_cookie_expiry(dashboard_headers)}
 
       {:error, _} = err ->
         err
@@ -89,7 +89,7 @@ defmodule Lacuna.Backend.API do
          login_data
          |> Map.put(:cookie, merged_cookie)
          |> Map.put(:ru_id, ru_id)
-         |> put_newer_expiry(cookie_expires_at(ru_headers))}
+         |> put_cookie_expiry(ru_headers)}
 
       {:error, _} ->
         {:ok, Map.put(login_data, :ru_id, nil)}
@@ -122,22 +122,29 @@ defmodule Lacuna.Backend.API do
     |> Enum.join("; ")
   end
 
-  defp put_newer_expiry(data, nil), do: data
-
-  defp put_newer_expiry(%{acsession_expires_at: nil} = data, expires_at),
-    do: %{data | acsession_expires_at: expires_at}
-
-  defp put_newer_expiry(%{acsession_expires_at: current} = data, expires_at) do
-    if DateTime.compare(expires_at, current) == :gt,
-      do: %{data | acsession_expires_at: expires_at},
-      else: data
+  defp put_cookie_expiry(data, headers) do
+    case cookie_expiry_update(headers) do
+      :unchanged -> data
+      {:replace, expires_at} -> Map.put(data, :acsession_expires_at, expires_at)
+    end
   end
 
   defp cookie_expires_at(headers) do
+    case cookie_expiry_update(headers) do
+      :unchanged -> nil
+      {:replace, expires_at} -> expires_at
+    end
+  end
+
+  defp cookie_expiry_update(headers) do
     headers
     |> set_cookie_lines()
-    |> Enum.filter(&String.starts_with?(&1, "acsession="))
-    |> Enum.find_value(&parse_cookie_expiry/1)
+    |> Enum.reverse()
+    |> Enum.find(&String.starts_with?(&1, "acsession="))
+    |> case do
+      nil -> :unchanged
+      line -> {:replace, parse_cookie_expiry(line)}
+    end
   end
 
   defp set_cookie_lines(headers) do
@@ -161,18 +168,18 @@ defmodule Lacuna.Backend.API do
   end
 
   defp find_max_age(attrs) do
-    Enum.find_value(attrs, fn attr ->
-      case String.split(attr, "=", parts: 2) do
-        [name, value] when name in ["Max-Age", "max-age"] -> parse_int(value)
-        _ -> nil
-      end
-    end)
+    case cookie_attribute(attrs, "max-age") do
+      nil -> nil
+      value -> parse_int(value)
+    end
   end
 
-  defp find_expires(attrs) do
+  defp find_expires(attrs), do: cookie_attribute(attrs, "expires")
+
+  defp cookie_attribute(attrs, expected) do
     Enum.find_value(attrs, fn attr ->
       case String.split(attr, "=", parts: 2) do
-        [name, value] when name in ["Expires", "expires"] -> value
+        [name, value] -> if String.downcase(name) == expected, do: String.trim(value)
         _ -> nil
       end
     end)
@@ -190,7 +197,7 @@ defmodule Lacuna.Backend.API do
   defp parse_http_date(value) do
     with [_, day, month, year, hour, minute, second] <-
            Regex.run(
-             ~r/^\w{3},\s*(\d{2})-(\w{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+GMT$/,
+             ~r/^\w{3},\s*(\d{1,2})[ -](\w{3})[ -](\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+GMT$/i,
              value
            ),
          month when is_integer(month) <- month_number(month),
@@ -219,7 +226,7 @@ defmodule Lacuna.Backend.API do
       "Nov" => 11,
       "Dec" => 12
     }
-    |> Map.get(month)
+    |> Map.get(String.capitalize(month))
   end
 
   @doc "List all facilities for the user. Returns the inner `facilities[]` array."
@@ -405,7 +412,7 @@ defmodule Lacuna.Backend.API do
     Lacuna.Backend.Session.merge_response_cookies(
       session,
       merge_cookies(nil, headers),
-      cookie_expires_at(headers)
+      cookie_expiry_update(headers)
     )
   rescue
     _ -> :ok
@@ -610,19 +617,7 @@ defmodule Lacuna.Backend.API do
 
   # The upstream sets multiple Set-Cookie values (acsession + PHPSESSID at
   # least). Authenticated calls need every name=value pair joined with "; ".
-  defp build_cookie_header(headers) do
-    headers
-    |> Enum.flat_map(fn
-      {k, v} ->
-        if String.downcase(to_string(k)) == "set-cookie", do: List.wrap(v), else: []
-    end)
-    |> Enum.map(fn line ->
-      line |> String.split(";", parts: 2) |> List.first() |> String.trim()
-    end)
-    |> Enum.reject(&(&1 == ""))
-    |> Enum.uniq()
-    |> Enum.join("; ")
-  end
+  defp build_cookie_header(headers), do: merge_cookies(nil, headers)
 
   defp ensure_header(headers, {k, _v} = h) do
     if Enum.any?(headers, fn {hk, _} -> String.downcase(hk) == String.downcase(k) end),

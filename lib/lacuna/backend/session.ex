@@ -177,7 +177,7 @@ defmodule Lacuna.Backend.Session do
         state
         | cookie: cookie,
           session_id: cookie,
-          acsession_expires_at: expires_at || state.acsession_expires_at,
+          acsession_expires_at: response_expiry(expires_at, state.acsession_expires_at),
           last_success_at: DateTime.utc_now()
       }
 
@@ -381,6 +381,9 @@ defmodule Lacuna.Backend.Session do
   defp expired?(%DateTime{} = at), do: DateTime.compare(DateTime.utc_now(), at) == :gt
 
   defp same_auth_cookie?(a, b), do: acsession_cookie(a) == acsession_cookie(b)
+
+  defp response_expiry(:unchanged, previous), do: previous
+  defp response_expiry({:replace, expires_at}, _previous), do: expires_at
 
   defp merge_cookie_delta(existing, delta) do
     ((existing || "") <> ";" <> delta)
