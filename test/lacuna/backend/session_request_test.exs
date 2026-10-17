@@ -206,6 +206,106 @@ defmodule Lacuna.Backend.SessionRequestTest do
     assert Session.current!().cookie == "acsession=rotated"
   end
 
+  test "request-time auth backoff is returned without using the stale lease", %{bypass: bypass} do
+    session = Session.current!()
+    Session.record_auth_failure()
+    Session.record_auth_failure()
+    assert {:pause, _} = Session.record_auth_failure()
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn _ ->
+      flunk("paused lease sent")
+    end)
+
+    assert {:error, {:auth_backoff, _}} = API.my_bookings(session)
+  end
+
+  test "request-time login failure is returned rather than sending an old lease", %{
+    bypass: bypass
+  } do
+    session = Session.current!()
+    Session.invalidate()
+    Bypass.stub(bypass, "POST", "/auth/m_login/", &Plug.Conn.resp(&1, 503, "Unavailable"))
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn _ ->
+      flunk("old lease sent")
+    end)
+
+    assert {:error, {:http_status, 503, _}} = API.my_bookings(session)
+  end
+
+  test "full mode sends the actual current cookie and matching context", %{bypass: bypass} do
+    Application.put_env(:lacuna, :auth_header_mode, :full)
+    old = Session.current!()
+    Session.invalidate()
+    fresh = Session.current!()
+
+    Bypass.expect_once(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      assert Plug.Conn.get_req_header(conn, "cookie") == [fresh.cookie]
+      assert Plug.Conn.get_req_header(conn, "session-id") == [fresh.session_id]
+      assert Plug.Conn.get_req_header(conn, "comm_id") == [fresh.comm_id]
+      reply(conn, %{"my_bookings" => %{}})
+    end)
+
+    assert {:ok, _} = API.my_bookings(old)
+    assert Session.current!().cookie == fresh.cookie
+  end
+
+  test "repeated auth rejection retries once and never installs rejected response cookies", %{
+    bypass: bypass,
+    count: count
+  } do
+    session = Session.current!()
+    requests = start_supervised!({Agent, fn -> 0 end}, id: :requests)
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      Agent.update(requests, &(&1 + 1))
+
+      conn
+      |> Plug.Conn.put_resp_header("set-cookie", "acsession=rejected; Path=/")
+      |> reply_error(401)
+    end)
+
+    assert {:error, {:upstream, 401, _}} = API.my_bookings(session)
+    assert Agent.get(count, & &1) == 2
+    assert Agent.get(requests, & &1) == 2
+    assert Session.current!().cookie == "acsession=lease-2"
+  end
+
+  test "a response from before cookie rotation cannot undo that rotation", %{bypass: bypass} do
+    session = Session.current!()
+    parent = self()
+    calls = start_supervised!({Agent, fn -> 0 end}, id: :calls)
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      n = Agent.get_and_update(calls, &{&1 + 1, &1 + 1})
+
+      if n == 1 do
+        send(parent, {:pending, self()})
+
+        receive do
+          :release -> :ok
+        after
+          2000 -> flunk("response not released")
+        end
+
+        conn
+        |> Plug.Conn.put_resp_header("set-cookie", "acsession=obsolete; Path=/")
+        |> reply(%{"my_bookings" => %{}})
+      else
+        conn
+        |> Plug.Conn.put_resp_header("set-cookie", "acsession=rotated; Path=/")
+        |> reply(%{"my_bookings" => %{}})
+      end
+    end)
+
+    task = Task.async(fn -> API.my_bookings(session) end)
+    assert_receive {:pending, handler}
+    assert {:ok, _} = API.my_bookings(session)
+    send(handler, :release)
+    assert {:ok, _} = Task.await(task)
+    assert Session.current!().cookie == "acsession=rotated"
+  end
+
   defp reply(conn, data) do
     Plug.Conn.resp(
       conn,

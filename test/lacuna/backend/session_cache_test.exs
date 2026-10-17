@@ -182,6 +182,46 @@ defmodule Lacuna.Backend.SessionCacheTest do
     refute File.exists?(path)
   end
 
+  @tag :tmp_dir
+  test "an old-account workflow cannot dispatch with new-account credentials", %{bypass: bypass} do
+    Session.configure("one@example.test", "synthetic-one")
+    old = Session.current!()
+    Session.configure("two@example.test", "synthetic-two")
+
+    Bypass.stub(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn _ ->
+      flunk("cross-account request sent")
+    end)
+
+    assert {:error, :session_context_changed} = API.my_bookings(old)
+    assert Session.lease_info().status == :idle
+  end
+
+  @tag :tmp_dir
+  test "a late old-account 401 cannot log into the newly configured account", %{bypass: bypass} do
+    Session.configure("one@example.test", "synthetic-one")
+    old = Session.current!()
+    parent = self()
+
+    Bypass.expect_once(bypass, "POST", "/facilities/m_get_my_bookings_v3", fn conn ->
+      send(parent, {:pending, self()})
+
+      receive do
+        :release -> :ok
+      after
+        2000 -> flunk("response not released")
+      end
+
+      Plug.Conn.resp(conn, 401, "Authentication Required")
+    end)
+
+    task = Task.async(fn -> API.my_bookings(old) end)
+    assert_receive {:pending, handler}
+    Session.configure("two@example.test", "synthetic-two")
+    send(handler, :release)
+    assert {:error, :session_context_changed} = Task.await(task)
+    assert Session.lease_info().status == :idle
+  end
+
   defp reply(conn, data) do
     Plug.Conn.resp(
       conn,

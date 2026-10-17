@@ -14,8 +14,8 @@ defmodule Lacuna.Backend.API do
 
   We unwrap to the inner data on success and surface a structured error
   otherwise. `Lacuna.Backend.Session` is the source of session/auth
-  headers — we don't depend on it directly here so this module stays
-  pure and easy to test.
+  headers. Authenticated responses update that request's lease atomically;
+  login/activation requests stay independent of the session singleton.
   """
 
   require Logger
@@ -383,17 +383,7 @@ defmodule Lacuna.Backend.API do
   defp session_headers(%Lacuna.Backend.Session{} = session),
     do: Lacuna.Backend.Session.auth_headers(session)
 
-  # Push new Set-Cookies back into the Session GenServer so the next
-  # call sees them. Best-effort: we never crash a request because the
-  # session refused the update.
-  defp current_session do
-    Lacuna.Backend.Session.current!()
-  rescue
-    _ -> nil
-  catch
-    :exit, _ -> nil
-  end
-
+  # Merge deltas inside the owner so concurrent responses cannot lose updates.
   defp update_session_cookies(nil, _headers), do: :ok
 
   defp update_session_cookies(session, headers) do
@@ -410,7 +400,12 @@ defmodule Lacuna.Backend.API do
 
   defp request(method, path, body, headers, opts) do
     # Capture headers and ownership from the same lease, including retries.
-    {headers, opts} = request_lease(headers, opts)
+    with {:ok, actual_headers, actual_opts} <- request_lease(headers, opts) do
+      do_request(method, path, body, actual_headers, actual_opts)
+    end
+  end
+
+  defp do_request(method, path, body, headers, opts) do
     url = Contract.base_url() <> path
 
     req_headers =
@@ -459,12 +454,20 @@ defmodule Lacuna.Backend.API do
   defp request_lease(headers, opts) do
     case Keyword.get(opts, :session) do
       %Lacuna.Backend.Session{} = supplied ->
-        actual = current_session() || supplied
-        {Lacuna.Backend.Session.auth_headers(actual), Keyword.put(opts, :session, actual)}
+        case Lacuna.Backend.Session.for_request(supplied) do
+          %Lacuna.Backend.Session{} = actual ->
+            {:ok, Lacuna.Backend.Session.auth_headers(actual),
+             Keyword.put(opts, :session, actual)}
+
+          {:error, _} = error ->
+            error
+        end
 
       _ ->
-        {headers, opts}
+        {:ok, headers, opts}
     end
+  catch
+    :exit, _ -> {:error, :session_unavailable}
   end
 
   # Auth recovery is lease-aware: a rejected request first checks whether
@@ -475,13 +478,13 @@ defmodule Lacuna.Backend.API do
   defp retry_after_relogin(method, path, body, opts) do
     with %Lacuna.Backend.Session{} = rejected <- Keyword.get(opts, :session),
          false <- Keyword.get(opts, :__retried, false) do
-      case Lacuna.Backend.Session.handle_auth_rejection(rejected.cookie) do
+      case Lacuna.Backend.Session.handle_auth_rejection(rejected) do
         {:retry, %Lacuna.Backend.Session{} = fresh} ->
           Logger.info("Backend.API: 401 on #{path}, retrying with newer auth lease")
           retry_with_session(method, path, body, opts, fresh)
 
         :relogin ->
-          case Lacuna.Backend.Session.current!() do
+          case Lacuna.Backend.Session.for_request(rejected) do
             %Lacuna.Backend.Session{} = fresh ->
               Logger.info("Backend.API: 401 on #{path}, re-logged in and retrying once")
               retry_with_session(method, path, body, opts, fresh)
@@ -494,12 +497,17 @@ defmodule Lacuna.Backend.API do
               nil
           end
 
+        {:error, _} = error ->
+          error
+
         _ ->
           nil
       end
     else
       _ -> nil
     end
+  catch
+    :exit, _ -> {:error, :session_unavailable}
   end
 
   defp retry_with_session(method, path, body, opts, fresh) do

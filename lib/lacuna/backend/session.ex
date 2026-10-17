@@ -54,6 +54,10 @@ defmodule Lacuna.Backend.Session do
   @spec current!() :: t()
   def current!, do: GenServer.call(__MODULE__, :current!, 30_000)
 
+  @doc false
+  def for_request(%__MODULE__{} = supplied),
+    do: GenServer.call(__MODULE__, {:for_request, supplied.email, supplied.password}, 30_000)
+
   @doc "Force a re-login on the next request (e.g., after we see a 401-ish payload)."
   def invalidate, do: GenServer.cast(__MODULE__, :invalidate)
 
@@ -71,8 +75,8 @@ defmodule Lacuna.Backend.Session do
   def lease_info, do: GenServer.call(__MODULE__, :lease_info)
 
   @doc "Handle a rejected authenticated request without clobbering a newer session lease."
-  def handle_auth_rejection(rejected_cookie),
-    do: GenServer.call(__MODULE__, {:auth_rejected, rejected_cookie})
+  def handle_auth_rejection(%__MODULE__{} = rejected),
+    do: GenServer.call(__MODULE__, {:auth_rejected, rejected}, 30_000)
 
   @doc """
   Headers the API client should add on every authenticated request.
@@ -123,18 +127,12 @@ defmodule Lacuna.Backend.Session do
     end
   end
 
-  def handle_call(:current!, _from, state) do
-    case state.auth_paused_until do
-      %DateTime{} = until ->
-        if DateTime.compare(DateTime.utc_now(), until) == :lt do
-          {:reply, {:error, {:auth_backoff, until}}, state}
-        else
-          current_unpaused(%{state | auth_paused_until: nil, auth_failures: []})
-        end
+  def handle_call(:current!, _from, state), do: current_reply(state)
 
-      _ ->
-        current_unpaused(state)
-    end
+  def handle_call({:for_request, email, password}, _from, state) do
+    if state.email == email and state.password == password,
+      do: current_reply(state),
+      else: {:reply, {:error, :session_context_changed}, state}
   end
 
   def handle_call(:record_auth_failure, _from, state) do
@@ -176,6 +174,8 @@ defmodule Lacuna.Backend.Session do
       new = %{
         state
         | cookie: cookie,
+          lease_id:
+            if(same_auth_cookie?(state.cookie, cookie), do: state.lease_id, else: make_ref()),
           session_id: cookie,
           acsession_expires_at: response_expiry(expires_at, state.acsession_expires_at),
           last_success_at: DateTime.utc_now()
@@ -188,8 +188,13 @@ defmodule Lacuna.Backend.Session do
     end
   end
 
-  def handle_call({:auth_rejected, rejected_cookie}, _from, %{status: :ok} = state) do
-    if same_auth_cookie?(state.cookie, rejected_cookie) do
+  def handle_call({:auth_rejected, rejected}, _from, state)
+      when state.email != rejected.email or state.password != rejected.password do
+    {:reply, {:error, :session_context_changed}, state}
+  end
+
+  def handle_call({:auth_rejected, rejected}, _from, %{status: :ok} = state) do
+    if state.lease_id == rejected.lease_id and same_auth_cookie?(state.cookie, rejected.cookie) do
       Logger.info("Booking backend rejected current auth lease; next request will relogin")
       clear_cached_session()
       {:reply, :relogin, %{state | status: :idle, cookie: nil, session_id: nil}}
@@ -202,8 +207,22 @@ defmodule Lacuna.Backend.Session do
     end
   end
 
-  def handle_call({:auth_rejected, _rejected_cookie}, _from, state) do
+  def handle_call({:auth_rejected, _rejected}, _from, state) do
     {:reply, :relogin, %{state | status: :idle, cookie: nil, session_id: nil}}
+  end
+
+  defp current_reply(state) do
+    case state.auth_paused_until do
+      %DateTime{} = until ->
+        if DateTime.compare(DateTime.utc_now(), until) == :lt do
+          {:reply, {:error, {:auth_backoff, until}}, state}
+        else
+          current_unpaused(%{state | auth_paused_until: nil, auth_failures: []})
+        end
+
+      _ ->
+        current_unpaused(state)
+    end
   end
 
   defp current_unpaused(state) do
