@@ -237,7 +237,8 @@ defmodule Lacuna.Backend.API do
 
   @doc """
   Availability for one facility on one date. Returns the inner
-  `facility_details` map as-is — caller computes free vs booked.
+  `facility_details` map bound to the requested facility; conflicting identities
+  are rejected before any caller can rebuild a booking target.
   """
   @spec facility_availability(map(), String.t(), Date.t()) :: result()
   def facility_availability(session, facility_id, %Date{} = date) do
@@ -258,12 +259,29 @@ defmodule Lacuna.Backend.API do
            ),
          {:ok, inner} <- unwrap_response(response),
          %{"facility_details" => details} <- inner do
-      {:ok, details}
+      bind_facility_identity(details, facility_id)
     else
       {:error, _} = err -> err
       other -> {:error, {:unexpected_availability_shape, other}}
     end
   end
+
+  defp bind_facility_identity(details, requested_id) when is_map(details) do
+    case Map.fetch(details, "facility_id") do
+      :error ->
+        {:ok, Map.put(details, "facility_id", to_string(requested_id))}
+
+      {:ok, id} when is_binary(id) or is_integer(id) ->
+        if to_string(id) == to_string(requested_id),
+          do: {:ok, Map.put(details, "facility_id", to_string(requested_id))},
+          else: {:error, :availability_identity_mismatch}
+
+      _ ->
+        {:error, :availability_identity_mismatch}
+    end
+  end
+
+  defp bind_facility_identity(_, _), do: {:error, :invalid_availability}
 
   @doc """
   Create a booking. Calling code passes the form fields because fixed-slot
