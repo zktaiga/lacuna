@@ -91,35 +91,63 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
     assert {:ok, %{booking: %{"booking_id" => "booking-1"}}} = DefaultBooker.book(slot, %{})
   end
 
-  test "book confirms by response booking id when booking shape drifts", %{
+  for {field, value} <- [
+        {"facility_id", "court-b"},
+        {"facility_id", nil},
+        {"facility_id", %{"id" => "court-a"}},
+        {"start_date", "25-May-2099"},
+        {"start_date", "unexpected-date-format"},
+        {"start_date", nil},
+        {"start_time", "18:00"},
+        {"start_time", "19:00:00unexpected"},
+        {"end_time", "21:00"},
+        {"end_time", nil},
+        {"facility_time_slot_id", "different-slot"},
+        {"facility_time_slot_id", false}
+      ] do
+    test "returned new ID does not confirm target mismatch #{field}=#{inspect(value)}", %{
+      bypass: bypass,
+      slot: slot
+    } do
+      reads = start_supervised!({Agent, fn -> 0 end})
+      record = matching_booking("34624") |> Map.put(unquote(field), unquote(Macro.escape(value)))
+
+      Bypass.expect(
+        bypass,
+        &route(&1,
+          snapshot_reads: reads,
+          booking_response: envelope(%{"booking_id" => 34624}),
+          bookings_response: bookings([record])
+        )
+      )
+
+      assert {:error, {:booking_not_confirmed, %{"booking_id" => 34624}}} =
+               DefaultBooker.book(slot, %{})
+    end
+  end
+
+  test "returned new ID confirms exact target with normalized numeric IDs", %{
     bypass: bypass,
     slot: slot
   } do
-    {:ok, reads} = Agent.start_link(fn -> 0 end)
-    on_exit(fn -> if Process.alive?(reads), do: Agent.stop(reads) end)
+    reads = start_supervised!({Agent, fn -> 0 end})
+
+    record =
+      matching_booking("34624")
+      |> Map.put("facility_id", 42)
+      |> Map.put("facility_time_slot_id", 18)
 
     Bypass.expect(
       bypass,
       &route(&1,
         snapshot_reads: reads,
         booking_response: envelope(%{"booking_id" => 34624}),
-        bookings_response:
-          bookings([
-            %{
-              "type" => "upcoming_bookings",
-              "status" => "Booked",
-              "booking_id" => "34624",
-              "facility_id" => "different-court",
-              "facility_name" => "Different Court",
-              "start_date" => "unexpected-date-format",
-              "start_time" => "19:00",
-              "end_time" => "20:00"
-            }
-          ])
+        bookings_response: bookings([record])
       )
     )
 
-    assert {:ok, %{booking: %{"booking_id" => "34624"}}} = DefaultBooker.book(slot, %{})
+    assert {:ok, %{booking: %{"booking_id" => "34624"}}} =
+             DefaultBooker.book(%{slot | facility_id: "42", slot_id: "18"}, %{})
   end
 
   test "book matches provider day-month-name booking dates without response id", %{
@@ -229,6 +257,24 @@ defmodule Lacuna.Plugins.DefaultBookerTest do
 
     assert {:error, {:booking_not_confirmed, %{"booking_id" => "booking-1"}}} =
              DefaultBooker.book(slot, %{})
+  end
+
+  test "malformed post-write booking groups cannot confirm an exact new record", %{
+    bypass: bypass,
+    slot: slot
+  } do
+    reads = start_supervised!({Agent, fn -> 0 end})
+
+    Bypass.expect(
+      bypass,
+      &route(&1,
+        snapshot_reads: reads,
+        booking_response: envelope(%{"booking_id" => "booking-1"}),
+        bookings_response: envelope(%{"my_bookings" => %{"0" => matching_booking("booking-1")}})
+      )
+    )
+
+    assert {:error, {:booking_not_confirmed, _}} = DefaultBooker.book(slot, %{})
   end
 
   test "failed booking reads return the stable confirmation error", %{bypass: bypass, slot: slot} do

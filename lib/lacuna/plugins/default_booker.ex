@@ -96,22 +96,13 @@ defmodule Lacuna.Plugins.DefaultBooker do
     end
   end
 
-  defp confirms_creation?(booking, _slot, booking_id, {:ok, %{"my_bookings" => groups}})
-       when not is_nil(booking_id) and is_map(groups) do
-    existing = groups |> Map.values() |> List.flatten()
-
-    Enum.all?(Map.values(groups), &is_list/1) and Enum.all?(existing, &is_map/1) and
-      booking_id_matches?(booking, booking_id) and
-      not Enum.any?(existing, &booking_id_matches?(&1, booking_id))
-  end
-
-  defp confirms_creation?(booking, slot, nil, {:ok, %{"my_bookings" => groups}})
+  defp confirms_creation?(booking, slot, booking_id, {:ok, %{"my_bookings" => groups}})
        when is_map(groups) do
     id = normalize_id(booking["booking_id"])
     existing = groups |> Map.values() |> List.flatten()
 
     Enum.all?(Map.values(groups), &is_list/1) and Enum.all?(existing, &is_map/1) and
-      id != nil and matches_slot?(booking, slot) and
+      id != nil and (booking_id == nil or id == booking_id) and matches_slot?(booking, slot) and
       not Enum.any?(existing, &booking_id_matches?(&1, id))
   end
 
@@ -138,7 +129,12 @@ defmodule Lacuna.Plugins.DefaultBooker do
   end
 
   defp upcoming_bookings(%{"my_bookings" => groups}) when is_map(groups) do
-    groups |> Map.values() |> List.flatten() |> Enum.filter(&(is_map(&1) and upcoming?(&1)))
+    lists = Map.values(groups)
+    records = List.flatten(lists)
+
+    if Enum.all?(lists, &is_list/1) and Enum.all?(records, &is_map/1),
+      do: Enum.filter(records, &upcoming?/1),
+      else: []
   end
 
   defp upcoming_bookings(_), do: []
@@ -158,17 +154,13 @@ defmodule Lacuna.Plugins.DefaultBooker do
     normalize_id(Map.get(booking, "booking_id")) == booking_id
   end
 
-  defp normalize_id(nil), do: nil
+  defp normalize_id(value) when is_integer(value), do: Integer.to_string(value)
 
-  defp normalize_id(value) do
-    value
-    |> to_string()
-    |> String.trim()
-    |> case do
-      "" -> nil
-      id -> id
-    end
+  defp normalize_id(value) when is_binary(value) do
+    if value != "" and String.trim(value) == value, do: value, else: nil
   end
+
+  defp normalize_id(_), do: nil
 
   defp booking_status(booking) do
     booking
@@ -187,17 +179,17 @@ defmodule Lacuna.Plugins.DefaultBooker do
   end
 
   defp booking_facility_matches?(booking, slot) do
-    case normalize_id(booking["facility_id"]) do
-      nil -> booking["facility_name"] == slot.facility_name
-      id -> id == normalize_id(slot.facility_id)
-    end
+    id = normalize_id(booking["facility_id"])
+    id != nil and id == normalize_id(slot.facility_id)
   end
 
   defp booking_slot_id_matches?(booking, slot_id) do
-    case normalize_id(first_present(booking, ["facility_time_slot_id", "slot_id"])) do
-      nil -> true
-      id -> id == normalize_id(slot_id)
-    end
+    ["facility_time_slot_id", "slot_id"]
+    |> Enum.filter(&Map.has_key?(booking, &1))
+    |> Enum.all?(fn key ->
+      id = normalize_id(booking[key])
+      id != nil and id == normalize_id(slot_id)
+    end)
   end
 
   defp booking_end_matches?(booking, time) do
@@ -277,11 +269,10 @@ defmodule Lacuna.Plugins.DefaultBooker do
   defp normalize_time(value) when is_binary(value) do
     value
     |> String.trim()
-    |> String.slice(0, 8)
     |> pad_time_seconds()
     |> Time.from_iso8601()
     |> case do
-      {:ok, time} -> Time.truncate(time, :second)
+      {:ok, time} -> time
       {:error, _} -> nil
     end
   end
