@@ -175,12 +175,21 @@ defmodule Lacuna.Bookings do
   end
 
   def browsing_slots(details, date, bookings) do
+    if Availability.validate(details) == :ok do
+      validated_browsing_slots(details, date, bookings)
+    else
+      []
+    end
+  end
+
+  defp validated_browsing_slots(details, date, bookings) do
     open = Availability.open_slots(details, date)
 
     grid =
       details
       |> Map.delete("booked_slots_on_date")
       |> Map.delete("slot_availability")
+      |> Map.delete("slots_capacity_details")
       |> Availability.open_slots(date)
 
     owned =

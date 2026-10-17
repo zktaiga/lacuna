@@ -148,6 +148,7 @@ defmodule Lacuna.BookingsTest do
     details =
       Agent.get(pid, & &1.availability)
       |> Map.put("slot_availability", %{"slot-18" => %{"is_available" => false}})
+      |> Map.put("slots_capacity_details", %{"slot-18" => %{"capacity" => 1, "available" => 0}})
 
     assert Bookings.browsing_slots(details, slot.date, []) == []
 
@@ -156,6 +157,11 @@ defmodule Lacuna.BookingsTest do
 
     assert {:already_booked, _} =
              Bookings.eligibility(held, [booking("mine", "court-a", "18:00")])
+  end
+
+  test "malformed occupancy cannot manufacture a held browsing slot", %{pid: pid, slot: slot} do
+    details = Agent.get(pid, & &1.availability) |> Map.put("slots_capacity_details", nil)
+    assert Bookings.browsing_slots(details, slot.date, [booking("mine", "court-a", "18:00")]) == []
   end
 
   test "malformed bookings fail closed without writes", %{pid: pid, slot: slot, opts: opts} do
