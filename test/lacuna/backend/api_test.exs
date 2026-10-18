@@ -96,7 +96,16 @@ defmodule Lacuna.Backend.APITest do
   end
 
   defp active,
-    do: %{"booking_id" => "booking-1", "type" => "upcoming_bookings", "status" => "Booked"}
+    do: %{
+      "booking_id" => "booking-1",
+      "type" => "upcoming_bookings",
+      "status" => "Booked",
+      "facility_id" => "court-a",
+      "facility_name" => "Synthetic Court",
+      "start_date" => "2099-05-24",
+      "start_time" => "10:00",
+      "end_time" => "11:00"
+    }
 
   defp bookings(list),
     do:

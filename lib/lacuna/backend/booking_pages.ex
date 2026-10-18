@@ -32,7 +32,9 @@ defmodule Lacuna.Backend.BookingPages do
        when is_map(groups) and is_map(offsets) do
     with {:ok, upcoming} <- offset(offsets["upcoming_offset"]),
          {:ok, past} <- offset(offsets["past_offset"]) do
-      if Enum.all?(groups, fn {_key, rows} -> is_list(rows) and Enum.all?(rows, &is_map/1) end) do
+      if Enum.all?(groups, fn {_key, rows} ->
+           is_list(rows) and Enum.all?(rows, &valid_booking?/1)
+         end) do
         {:ok, groups,
          offsets |> Map.put("upcoming_offset", upcoming) |> Map.put("past_offset", past)}
       else
@@ -82,13 +84,79 @@ defmodule Lacuna.Backend.BookingPages do
     end)
   end
 
+  defp valid_booking?(row) when is_map(row) do
+    row["type"] in ["upcoming_bookings", "past_bookings"] and
+      booking_id(row["booking_id"]) != nil and booking_id(row["facility_id"]) != nil and
+      valid_status?(row["status"]) and valid_interval?(row)
+  end
+
+  defp valid_booking?(_), do: false
+
+  # Unknown approval statuses must remain visible to the conservative active-booking guard.
+  defp valid_status?(status) when is_binary(status),
+    do: String.valid?(status) and String.trim(status) != ""
+
+  defp valid_status?(_), do: false
+
+  defp valid_interval?(row) do
+    with {:ok, _date} <- parse_date(row["start_date"] || row["booking_date"] || row["date"]),
+         {:ok, start_time} <-
+           parse_time(row["start_time"] || row["booking_start_time"] || row["from_time"]),
+         {:ok, end_time} <-
+           parse_time(row["end_time"] || row["booking_end_time"] || row["to_time"]) do
+      Time.compare(start_time, end_time) == :lt
+    else
+      _ -> false
+    end
+  end
+
+  defp parse_date(value) when is_binary(value) do
+    case Date.from_iso8601(value) do
+      {:ok, date} ->
+        {:ok, date}
+
+      _ ->
+        case Regex.run(~r/\A([0-9]{1,2})[-\/]([0-9]{1,2}|[A-Za-z]{3})[-\/]([0-9]{4})\z/, value) do
+          [_, day, month, year] ->
+            Date.new(String.to_integer(year), month_number(month), String.to_integer(day))
+
+          _ ->
+            :error
+        end
+    end
+  end
+
+  defp parse_date(_), do: :error
+
+  defp month_number(month) do
+    case Integer.parse(month) do
+      {number, ""} ->
+        number
+
+      _ ->
+        (Enum.find_index(
+           ~w(jan feb mar apr may jun jul aug sep oct nov dec),
+           &(&1 == String.downcase(month))
+         ) || -1) + 1
+    end
+  end
+
+  defp parse_time(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9]{2}:[0-9]{2}(?::[0-9]{2})?\z/, value) do
+      Time.from_iso8601(if byte_size(value) == 5, do: value <> ":00", else: value)
+    else
+      :error
+    end
+  end
+
+  defp parse_time(_), do: :error
+
   defp booking_id(value) when is_integer(value), do: Integer.to_string(value)
 
   defp booking_id(value) when is_binary(value) do
-    case String.trim(value) do
-      "" -> nil
-      id -> id
-    end
+    if String.valid?(value) and value != "" and String.trim(value) == value,
+      do: value,
+      else: nil
   end
 
   defp booking_id(_), do: nil
